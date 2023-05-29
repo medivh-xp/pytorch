@@ -1976,6 +1976,14 @@ class InstructionTranslator(InstructionTranslatorBase):
                 if k in f_locals
             )
 
+            with torch.Logger(prefix="torchdynamo wrapped inputs") as logger:
+                for k, v in self.symbolic_locals.items():
+                    local_value = f_locals[k]
+                    if isinstance(local_value, torch.Tensor):
+                        local_value = f'tensor(size={tuple(local_value.shape)}, {local_value.dtype})'
+                    logger.info(f"Dynamo wrapped input '{k}' = {local_value} => "
+                                f"{v} {v.proxy.node.meta['example_value'] if hasattr(v, 'proxy') else ''}")
+
             # symbolic_locals contains the mapping from original f_locals to the
             # Variable objects. During the Variable building phase, each object also
             # has its associated guards. At the end, we will accumulate these

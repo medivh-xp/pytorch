@@ -411,6 +411,20 @@ def _compile(
             mutated_closure_cell_contents,
             frame_state=frame_state,
         )
+
+        with torch.Logger(prefix='torch.dynamo transform instructions') as logger:
+            resume_offset = -1
+            for ins in instructions:
+                if ins.opname == 'JUMP_ABSOLUTE':
+                    resume_offset = int(ins.argval)
+                    logger.info('┌─────────────────────────────┐')
+                    logger.info('│          Dead code          |')
+                    logger.info('└─────────────────────────────┘')
+                    continue
+                if int(ins.offset) > resume_offset:
+                    logger.info('{:3} |\t{:15} |\t{:8} |\t{:5}'.format(str(ins.offset), ins.opname, str(ins.arg), str(ins.argval)))
+
+
         with tracing(tracer.output.tracing_context):
             tracer.run()
         output = tracer.output
@@ -495,6 +509,18 @@ def _compile(
                 ]
             )
             guards_log.debug(guard_str)
+
+        with torch.Logger(prefix='torch.dynamo GUARDS') as logger:
+            guard_str = "GUARDS:\n"
+            guard_str += "\n".join(
+                [
+                    f"  {code}"
+                    for guard in sorted(output.guards)
+                    if guard.code_list is not None
+                    for code in guard.code_list
+                ]
+            )
+            logger.info(guard_str)
 
         if hooks.guard_export_fn is not None:
             hooks.guard_export_fn(output.guards)

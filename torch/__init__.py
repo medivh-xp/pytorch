@@ -1695,3 +1695,64 @@ torch.backends.mps._init()
 
 from . import _logging
 _logging._init_logs()
+
+import logging
+import sys
+
+class Logger:
+    allowed_prefixes = []
+    @classmethod
+    def set_allowed_prefixes(cls, prefixes):
+        cls.allowed_prefixes = prefixes
+
+    def __init__(self, level=logging.DEBUG, color=True, output=sys.stdout, file=None, prefix = None):
+        self.level = level
+        self.color = color
+        self.output = output
+        self.file = file
+        self.logger = None
+        self.prefix = prefix
+
+    def __enter__(self):
+        self.logger = logging.getLogger()
+        self.logger.setLevel(self.level)
+        self.logger.disabled = Logger.allowed_prefixes and self.prefix not in Logger.allowed_prefixes
+
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+        if self.color:
+            try:
+                import colorlog
+            except ImportError:
+                self.color = False
+            else:
+                formatter = colorlog.ColoredFormatter(
+                    '%(log_color)s%(asctime)s [%(levelname)s] %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    log_colors={
+                        'DEBUG': 'cyan',
+                        'INFO': 'green',
+                        'WARNING': 'yellow',
+                        'ERROR': 'red',
+                        'CRITICAL': 'bold_red',
+                    })
+
+        if self.output:
+            console_handler = logging.StreamHandler(self.output)
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
+        if self.file:
+            file_handler = logging.FileHandler(self.file)
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+        self.logger.critical(f'🎵>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
+        self.logger.critical(f'[{self.prefix}]:')
+        return self.logger
+
+    def __exit__(self, type, value, traceback):
+        self.logger.critical(f'------------------------------------------------------\n')
+        if self.logger:
+            for handler in self.logger.handlers:
+                handler.close()
+                self.logger.removeHandler(handler)

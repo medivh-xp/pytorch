@@ -2132,6 +2132,8 @@ class ShapeEnv:
 
         if isinstance(r, sympy.Symbol):
             self.var_to_sources[r].append(source)
+        with torch.Logger() as logger:
+            logger.info(f"create_symbol {r} = {val} for {source.name()}")
         return r
 
     # Generates a list of guards strings which, when evaluated in a context that
@@ -2872,6 +2874,8 @@ class ShapeEnv:
             stack = ''.join(traceback.format_list(tb))
             guard = ShapeGuard(g, stack)
             self.guards.append(guard)
+            with torch.Logger() as logger:
+                logger.info(f'Shape env append guard {self.guards[-1][0]}')
             if self.log.isEnabledFor(logging.INFO):
                 for frame in reversed(tb):
                     if frame.filename not in uninteresting_files():

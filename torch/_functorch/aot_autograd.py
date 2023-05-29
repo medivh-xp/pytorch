@@ -716,6 +716,10 @@ def run_functionalized_fw_and_collect_metadata(
 
         flat_f_args = pytree.tree_map(to_fun, flat_args)
 
+        with torch.Logger(prefix='Aot wrapped leafs') as logger:
+            for arg, f_arg in zip(flat_args, flat_f_args):
+                logger.info(f'    wrapped leaf: {arg} -> {f_arg}')
+
         torch._enable_functionalization(reapply_views=True)
         try:
             # precondition: The passed in function already handles unflattening inputs + flattening outputs

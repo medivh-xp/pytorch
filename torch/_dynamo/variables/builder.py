@@ -836,6 +836,9 @@ class VariableBuilder:
         tensor_proxy = self.tx.output.root_tracer.create_graph_input(
             re.sub(r"[^a-zA-Z0-9]+", "_", self.name), type(value)
         )
+        with torch.Logger() as logger:
+            logger.info(f'Create placeholder {re.sub(r"[^a-zA-Z0-9]+", "_", self.name)} for input {self.name}')
+
         tensor_variable = wrap_fx_proxy(
             tx=self.tx,
             proxy=tensor_proxy,

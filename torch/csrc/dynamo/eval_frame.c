@@ -637,6 +637,7 @@ static PyObject* _custom_eval_frame(
     }
     PyCodeObject* cached_code = (PyCodeObject*)maybe_cached_code;
     // used cached version
+    fprintf(stderr, "[%s:%d] Cache hit frame:%s cache:%p \n", __func__, __LINE__, name(frame), cached_code);
     DEBUG_TRACE("cache hit %s", name(frame));
     return eval_custom_code(tstate, frame, cached_code, throw_flag);
   }
@@ -660,6 +661,7 @@ static PyObject* _custom_eval_frame(
     PyCodeObject* cached_code = (PyCodeObject*)maybe_cached_code;
     // used cached version
     DEBUG_TRACE("cache hit %s", name(frame));
+    fprintf(stderr, "[%s:%d] Cache hit frame:%s cache:%p \n", __func__, __LINE__, name(frame), cached_code);
     // Re-enable custom behavior
     eval_frame_callback_set(callback);
     return eval_custom_code(tstate, frame, cached_code, throw_flag);
