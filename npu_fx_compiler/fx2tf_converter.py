@@ -126,3 +126,11 @@ def conveter_cat(args: Tuple[Argument, ...], kwargs: Dict[str, Any], meta_output
 @register_fx_node_tf_converter(torch.ops.aten.ones.default)
 def conveter_ones(args: Tuple[Argument, ...], kwargs: Dict[str, Any], meta_outputs: Any):
     return tf.ones(args[0])
+
+@register_fx_node_tf_converter(torch.ops.aten.split.Tensor)
+def conveter_split(args: Tuple[Argument, ...], kwargs: Dict[str, Any], meta_outputs: Any):
+    split_sizes = args[1]
+    if isinstance(split_sizes, int):
+        split_sizes = [args[1] for _ in range(len(meta_outputs))]
+        split_sizes[-1] = -1
+    return tf.split(args[0], split_sizes)

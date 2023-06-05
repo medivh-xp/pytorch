@@ -21,7 +21,9 @@ class Model(torch.nn.Module):
 
     def forward(self, x, y):
         x = torch.cat([torch.ones(x.size()), torch.ones(y.size())])
-        return torch.ones(x.size()), x
+        x = torch.ones(x.size())
+        x = torch.split(x, 2)
+        return x[-1], x[0]
 
 
 model = Model()

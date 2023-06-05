@@ -563,6 +563,76 @@ node {
     }
   }
 }
+node {
+  name: "Const"
+  op: "Const"
+  attr {
+    key: "dtype"
+    value {
+      type: DT_INT32
+    }
+  }
+  attr {
+    key: "value"
+    value {
+      tensor {
+        dtype: DT_INT32
+        tensor_shape {
+          dim {
+            size: 3
+          }
+        }
+        tensor_content: "\002\000\000\000\002\000\000\000\377\377\377\377"
+      }
+    }
+  }
+}
+node {
+  name: "split/split_dim"
+  op: "Const"
+  attr {
+    key: "dtype"
+    value {
+      type: DT_INT32
+    }
+  }
+  attr {
+    key: "value"
+    value {
+      tensor {
+        dtype: DT_INT32
+        tensor_shape {
+        }
+        int_val: 0
+      }
+    }
+  }
+}
+node {
+  name: "split"
+  op: "SplitV"
+  input: "ones_2"
+  input: "Const"
+  input: "split/split_dim"
+  attr {
+    key: "T"
+    value {
+      type: DT_FLOAT
+    }
+  }
+  attr {
+    key: "Tlen"
+    value {
+      type: DT_INT32
+    }
+  }
+  attr {
+    key: "num_split"
+    value {
+      i: 3
+    }
+  }
+}
 versions {
   producer: 1395
 }

@@ -9,6 +9,7 @@ from torch.fx import Interpreter
 from torch.fx.node import Argument, Target
 from torch._functorch.aot_autograd import aot_module_simplified
 import torch
+from torch._dynamo.allowed_functions import is_builtin_callable
 import functools
 import functools
 from typing import List, Callable
@@ -61,28 +62,31 @@ class NpuGraphConverter(Interpreter):
             super().run(*args, **kwargs)
             return self._graph
 
-    def _wrap(self, f):
-        @functools.wraps(f)
-        def inner(self, target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any]):
-            meta_outputs = f(target, _unpack_meta(args), kwargs)
+    def _unpack_npu(self, args):
+        unpacked = []
+        for arg in args:
+            if isinstance(arg, (list, tuple)) and len(arg):
+                if _is_symlist(arg):
+                    arg = self._graph.parse_symlist(arg)
+                else:
+                    assert all(isinstance(v, ValuePack) for v in arg)
+                    arg = [v.npu for v in arg]
 
-            def _unpack_npu(args):
-                unpacked = []
-                for arg in args:
-                    if isinstance(arg, (list, tuple)) and len(arg):
-                        if _is_symlist(arg):
-                            arg = self._graph.parse_symlist(arg)
-                        else:
-                            assert all(isinstance(v, ValuePack) for v in arg)
-                            arg = [v.npu for v in arg]
+            if isinstance(arg, ValuePack):
+                unpacked.append(arg.npu)
+            else:
+                unpacked.append(arg)
+        return unpacked
 
-                    if isinstance(arg, ValuePack):
-                        unpacked.append(arg.npu)
-                    else:
-                        unpacked.append(arg)
-                return list(unpacked)
-
-            npu_outputs = self._graph.parse_node(target, _unpack_npu(args), kwargs, meta_outputs)
+    def _wrap(self, fn):
+        def inner(target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any]):
+            func = getattr(super(NpuGraphConverter, self), fn)
+            if is_builtin_callable(target):
+                return func(target, args, kwargs)
+            meta_outputs = func(target, _unpack_meta(args), kwargs)
+            npu_outputs = self._graph.parse_node(target, self._unpack_npu(args), kwargs, meta_outputs)
+            if isinstance(npu_outputs, (tuple, list)):
+                return [ValuePack(k, v) for k, v in zip(meta_outputs, npu_outputs)]
             return ValuePack(meta_outputs, npu_outputs)
 
         return inner
@@ -95,15 +99,15 @@ class NpuGraphConverter(Interpreter):
 
     @trace_print
     def call_function(self, target: Target, args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
-        return self._wrap(super().call_function)(self, target, args, kwargs)
+        return self._wrap('call_function')(target, args, kwargs)
 
     @trace_print
     def call_method(self, target: Target, args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
-        return self._wrap(super().call_method)(target, args, kwargs)
+        return self._wrap('call_method')(target, args, kwargs)
 
     @trace_print
     def call_module(self, target: Target, args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
-        return self._wrap(super().call_module)(target, args, kwargs)
+        return self._wrap('call_module')(target, args, kwargs)
 
     @trace_print
     def output(self, target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
