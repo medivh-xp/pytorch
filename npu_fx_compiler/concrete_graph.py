@@ -54,7 +54,11 @@ class ConcreteGraphBase(ABC):
     @abstractmethod
     def parse_node(self, target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any], meta_outputs: Any):
         '''
-        处理fx图中的普通节点，其中meta_outputs为MetaTensor时的输出，args为同时包含MetaTensor和NpuTensor输出的ValuePack
+        处理fx图中的普通节点，其中meta_outputs为MetaTensor时的输出，对于args中的每个值：
+        - 如果该入参中的值中包含symInt, 则arg为NpuTensor
+        - 如果该入参为Tensor, 则arg为NpuTensor
+        - 如果为基本类型，则arg为基本类型
+        - 当节点的输入本身为List[Tensor]时，则为List[NpuTensor]
         '''
         pass
 
