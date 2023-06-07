@@ -1,0 +1,46 @@
+op {
+  name: "arg0_1"
+  type: "Data"
+  attr {
+    key: "index"
+    value {
+      i: 0
+    }
+  }
+}
+op {
+  name: "arg1_1"
+  type: "Data"
+  attr {
+    key: "index"
+    value {
+      i: 1
+    }
+  }
+}
+op {
+  name: "arg2_1"
+  type: "Data"
+  attr {
+    key: "index"
+    value {
+      i: 2
+    }
+  }
+}
+op {
+  name: "arg3_1"
+  type: "Data"
+  attr {
+    key: "index"
+    value {
+      i: 3
+    }
+  }
+}
+op {
+  name: "Add_1"
+  type: "Add"
+  input: "arg2_1:0"
+  input: "arg3_1:0"
+}

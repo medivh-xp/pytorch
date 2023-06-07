@@ -1,0 +1,18 @@
+add_library(ge_libs INTERFACE)
+
+include_directories(${ASCEND_CI_BUILD_DIR}/graphengine/inc)
+include_directories(${ASCEND_CI_BUILD_DIR}/graphengine/inc/external)
+include_directories(${ASCEND_CI_BUILD_DIR}/metadef/inc)
+include_directories(${ASCEND_CI_BUILD_DIR}/metadef/inc/external)
+add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/_fake.cc
+        COMMAND touch ${CMAKE_CURRENT_BINARY_DIR}/_fake.cc
+)
+
+set(fake_sources ${CMAKE_CURRENT_BINARY_DIR}/_fake.cc)
+
+add_library(ge_runner SHARED ${fake_sources})
+add_library(fmk_parser SHARED ${fake_sources})
+target_link_libraries(ge_libs INTERFACE
+        ge_runner
+        fmk_parser)
