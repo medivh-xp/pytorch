@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 from torch.distributed._tensor.device_mesh import DeviceMesh
-from torch.distributed._tensor.op_schema import PlacementStrategy, StrategyList
+from torch.distributed._tensor.op_schema import OpStrategy, PlacementStrategy
 from torch.distributed._tensor.placement_types import (
     _Partial,
     DTensorSpec,
@@ -90,7 +90,7 @@ def gen_einsum_strategies(
     mesh: DeviceMesh,
     *,
     linearity: bool = False,
-) -> StrategyList:
+) -> OpStrategy:
     """
     Generate a strategy list for the ops that follow einsum style notation.
     """
@@ -173,11 +173,11 @@ def gen_einsum_strategies(
     # strategies base on the actual tensor shape
     # (i.e. for Shard, tensor dim size must > mesh size)
     all_strategies = []
-    for startegy_comb in strategy_combs:
+    for strategy_comb in strategy_combs:
         spec_list = []
-        for specs in zip(*startegy_comb):
-            spec_list.append(DTensorSpec(mesh, list(specs)))
+        for specs in zip(*strategy_comb):
+            spec_list.append(DTensorSpec(mesh, tuple(specs)))
         strat = PlacementStrategy(output_spec=spec_list[0], input_specs=spec_list[1:])
         all_strategies.append(strat)
 
-    return StrategyList(all_strategies)
+    return OpStrategy(all_strategies)

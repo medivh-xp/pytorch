@@ -127,7 +127,7 @@ def fuse_as_graphmodule(gm: GraphModule,
     node_to_placeholder: Dict[Node, Node] = {}  # mapping of nodes from old graph to placeholder in new graph
     node_map: Dict[Node, Node] = {}       # mapping of nodes from old graph to new graph
 
-    # handles inputs throught graph.node_copy's arg_transform functions
+    # handles inputs through graph.node_copy's arg_transform functions
     def remap_inputs(x):
         if x.op == "get_attr":
             # TODO: do we really need copy the get_attr node into the graph?
@@ -173,8 +173,8 @@ def fuse_as_graphmodule(gm: GraphModule,
 
     # lint to ensure correctness
     subgraph.lint()
-
-    fused_gm: GraphModule = lift_subgraph_as_module(gm, subgraph, class_name=module_name)
+    fused_gm: GraphModule
+    fused_gm, _ = lift_subgraph_as_module(gm, subgraph, comp_name="", class_name=module_name)
 
     # sub_gm's input nodes in the original module
     original_inputs: Tuple[Node, ...] = tuple(node_to_placeholder.keys())

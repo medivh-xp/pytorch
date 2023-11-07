@@ -11,21 +11,14 @@ from torch.onnx._internal import diagnostics
 __all__ = [
     "OnnxExporterError",
     "OnnxExporterWarning",
-    "CallHintViolationWarning",
     "CheckerError",
-    "UnsupportedOperatorError",
     "SymbolicValueError",
+    "UnsupportedOperatorError",
 ]
 
 
 class OnnxExporterWarning(UserWarning):
     """Base class for all warnings in the ONNX exporter."""
-
-    pass
-
-
-class CallHintViolationWarning(OnnxExporterWarning):
-    """Warning raised when a type hint is violated during a function call."""
 
     pass
 

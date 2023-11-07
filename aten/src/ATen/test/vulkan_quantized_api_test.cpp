@@ -5,14 +5,17 @@
 #include <ATen/native/quantized/cpu/QuantUtils.h>
 #include <ATen/native/vulkan/api/api.h>
 #include <ATen/native/vulkan/ops/Common.h>
-#include <ATen/native/vulkan/ops/Convolution.h>
 #include <ATen/native/vulkan/ops/Copy.h>
 #include <ATen/native/vulkan/ops/Factory.h>
+#include <ATen/native/vulkan/ops/Mm.h>
 #include <ATen/native/vulkan/ops/QuantizedFunctions.h>
 #include <c10/util/irange.h>
 #include <gtest/gtest.h>
 #include <cstring>
 #include <random>
+#include <ATen/native/quantized/PackedParams.h>
+
+#include <cstdio>
 
 using namespace at::native::vulkan::api::utils;
 
@@ -58,7 +61,8 @@ bool exactlyEqual(const at::Tensor& a, const at::Tensor& b) {
 }
 */
 
-void showRtol(const at::Tensor& a, const at::Tensor& b) {
+void showRtol(const at::Tensor& a, const at::Tensor& b,
+    long *xpos=nullptr, long *ypos=nullptr) {
   const auto diff = (a - b).abs();
 
   double maxValue = a.abs().max().item<double>();
@@ -72,6 +76,7 @@ void showRtol(const at::Tensor& a, const at::Tensor& b) {
 
   const double maxDiff = maxValue * tolerance;
   std::cout << "Max Diff allowed: " << maxDiff << std::endl;
+  std::cout << "Max Diff found is: " << diff.max().item<double>() << std::endl;
   if (diff.sizes().size() == 2) {
     for (const auto y : c10::irange(diff.sizes()[0])) {
       std::cout << y << ":";
@@ -79,6 +84,14 @@ void showRtol(const at::Tensor& a, const at::Tensor& b) {
         double diff_xy = diff[y][x].item<double>();
         if (diff_xy > maxDiff) {
           std::cout << std::setw(5) << x;
+          if (diff.max().item<double>() == diff_xy) {
+            std::cout << " : " << diff_xy;
+            if (xpos && xpos) {
+              *xpos = x;
+              *ypos = y;
+              return;
+            }
+          }
         } else {
           std::cout << std::setw(5) << " ";
         }
@@ -866,14 +879,35 @@ void test_quantize_per_tensor_and_dequantize(
     const at::IntArrayRef input_shape,
     const double input_scale,
     const int input_zero_point,
-    const c10::ScalarType dtype = c10::ScalarType::QUInt8) {
+    const c10::ScalarType dtype = c10::ScalarType::QUInt8,
+    bool use_qparams = false) {
   at::Tensor input = produce_random_tensor(input_shape);
 
+  at::Tensor input_scale_qparam = at::empty({1});
+  input_scale_qparam[0] = input_scale;
+  at::Tensor input_zero_point_qparam = at::empty({1});
+  input_zero_point_qparam[0] = input_zero_point;
+
   // quantize tensors
-  at::Tensor out_q_cpu =
-      at::quantize_per_tensor(input, input_scale, input_zero_point, dtype);
-  at::Tensor out_q_vk = at::quantize_per_tensor(
-      input.vulkan(), input_scale, input_zero_point, dtype);
+  at::Tensor out_q_cpu = use_qparams ?
+      at::quantize_per_tensor(input,
+      input_scale_qparam,
+      input_zero_point_qparam,
+      dtype) :
+      at::quantize_per_tensor(input,
+      input_scale,
+      input_zero_point,
+      dtype);
+  at::Tensor out_q_vk = use_qparams ?
+      at::quantize_per_tensor(
+      input.vulkan(),
+      input_scale_qparam,
+      input_zero_point_qparam,
+      dtype) :
+      at::quantize_per_tensor(
+      input.vulkan(),
+      input_scale,
+      input_zero_point, dtype);
 
   // dequantize tensors
   const auto out_cpu_deq = at::dequantize(out_q_cpu);
@@ -899,13 +933,14 @@ void test_quantize_per_tensor_and_dequantize(
 }
 
 void test_quantize_per_tensor_and_dequantize_random(
-    const c10::ScalarType dtype) {
+    const c10::ScalarType dtype,
+    bool use_qparams = false) {
   const double scale = produce_random_scale();
   const int zero_point = produce_random_zero_point(dtype);
   const at::IntArrayRef tensor_shape = {
       rand_pos_int(30), rand_pos_int(30), rand_pos_int(100), rand_pos_int(100)};
   test_quantize_per_tensor_and_dequantize(
-      tensor_shape, scale, zero_point, dtype);
+      tensor_shape, scale, zero_point, dtype, use_qparams);
 }
 
 TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_quint8) {
@@ -931,6 +966,32 @@ TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_quint8) {
 
   for (int i = 0; i < 20; i += 1) {
     test_quantize_per_tensor_and_dequantize_random(dtype);
+  }
+}
+
+TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_quint8_qparams) {
+  const c10::ScalarType dtype = c10::ScalarType::QUInt8;
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 1}, 0.13, 21, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 4}, 0.3, 87, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 4, 1}, 0.2, 120, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 7, 7}, 0.3, 87, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 8, 8}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 8, 8}, 0.04, 97, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 11, 17}, 0.07, 15, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 12, 17}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 12, 17}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 17, 12}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({2, 4, 17, 12}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 10, 14}, 0.001, 101, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 14}, 0.009, 43, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 15}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 9, 17}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 25, 29}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 25, 29}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({11, 17, 25, 29}, 0.027, 89, dtype, true);
+
+  for (int i = 0; i < 20; i += 1) {
+    test_quantize_per_tensor_and_dequantize_random(dtype, true);
   }
 }
 
@@ -960,6 +1021,32 @@ TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_qint8) {
   }
 }
 
+TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_qint8_qparams) {
+  const c10::ScalarType dtype = c10::ScalarType::QInt8;
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 1}, 0.13, -21, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 4}, 0.3, 87, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 4, 1}, 0.2, -120, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 7, 7}, 0.3, 87, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 8, 8}, 0.1, -10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 8, 8}, 0.04, 97, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 11, 17}, 0.07, -15, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 12, 17}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 12, 17}, 0.1, -10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 17, 12}, 0.1, 10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({2, 4, 17, 12}, 0.1, -10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 10, 14}, 0.001, 101, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 14}, 0.009, -43, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 15}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 9, 17}, 0.1, -19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 25, 29}, 0.1, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 25, 29}, 0.1, -19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({11, 17, 25, 29}, 0.027, 89, dtype, true);
+
+  for (int i = 0; i < 20; i += 1) {
+    test_quantize_per_tensor_and_dequantize_random(dtype, true);
+  }
+}
+
 TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_qint32) {
   const c10::ScalarType dtype = c10::ScalarType::QInt32;
   test_quantize_per_tensor_and_dequantize({1, 1, 1, 1}, 0.13, -21123, dtype);
@@ -985,6 +1072,33 @@ TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_qint32) {
     test_quantize_per_tensor_and_dequantize_random(dtype);
   }
 }
+
+TEST_F(VulkanAPITest, quantize_per_tensor_and_dequantize_qint32_qparams) {
+  const c10::ScalarType dtype = c10::ScalarType::QInt32;
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 1}, 0.13, -21123, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 1, 4}, 0.339, 8734, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 4, 1}, 0.228, -12023, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 7, 7}, 0.338, 8723, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 8, 8}, 0.193, -1023, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 8, 8}, 0.0449, 972, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 11, 17}, 0.073, -15, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 12, 17}, 0.1572, 102, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 12, 17}, 0.147, -156, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 17, 12}, 0.129, 10448, dtype, true);
+  test_quantize_per_tensor_and_dequantize({2, 4, 17, 12}, 0.137, -10, dtype, true);
+  test_quantize_per_tensor_and_dequantize({1, 1, 10, 14}, 0.001, 101, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 14}, 0.009, -43267, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 10, 15}, 0.1243, 19, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 9, 17}, 0.1889, -19784, dtype, true);
+  test_quantize_per_tensor_and_dequantize({3, 5, 25, 29}, 0.1345, 196, dtype, true);
+  test_quantize_per_tensor_and_dequantize({4, 4, 25, 29}, 0.129, -19489, dtype, true);
+  test_quantize_per_tensor_and_dequantize({11, 17, 25, 29}, 0.027, 89, dtype, true);
+
+  for (int i = 0; i < 20; i += 1) {
+    test_quantize_per_tensor_and_dequantize_random(dtype, true);
+  }
+}
+
 
 TEST_F(VulkanAPITest, quantized_add) {
   const auto in_cpu =
@@ -2918,124 +3032,226 @@ TEST_F(VulkanAPITest, conv2d_pw_quantized_prepack_random_params_int8_int32) {
       /* groups */ 1);
 }
 
-void test_convert_qconv2d_context(
-    const bool random_quantization_params,
+TEST_F(VulkanAPITest, quantized_tensor_get_scale_zero_point) {
+  const auto in_cpu =
+      at::rand({2, 13, 12, 27}, at::TensorOptions(at::kCPU).dtype(at::kFloat));
+
+  const double scale = 0.1;
+  const int zero_point = 10;
+
+  const auto cpu_quantized = at::quantize_per_tensor(
+      in_cpu, scale, zero_point, c10::ScalarType::QUInt8);
+
+  const auto in_vulkan = in_cpu.vulkan();
+  const auto vulkan_quantized = at::native::vulkan::ops::quantize_per_tensor(
+      in_vulkan, scale, zero_point, c10::ScalarType::QUInt8);
+
+  double cpu_quantized_scale = cpu_quantized.q_scale();
+  int64_t cpu_quantized_zero_point = cpu_quantized.q_zero_point();
+  double vulkan_quantized_scale = vulkan_quantized.q_scale();
+  int64_t vulkan_quantized_zero_point = vulkan_quantized.q_zero_point();
+
+  ASSERT_TRUE(cpu_quantized_scale == vulkan_quantized_scale &&
+      cpu_quantized_zero_point == vulkan_quantized_zero_point);
+}
+
+bool _test_quantized_linear(
+    const at::Tensor& input_cpu,
+    const at::Tensor& weight,
+    const at::Tensor& bias,
+    double out_scale,
+    int out_zero_point,
+    bool input_quant_dtype_int8,
+    bool weight_quant_dtype_int8) {
+  const auto input_quant_params = compute_quant_params(input_cpu,
+      input_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+  double scale = std::get<0>(input_quant_params);
+  scale = safe_downcast<float>(scale);
+  int zero_point = std::get<1>(input_quant_params);
+  auto input_cpu_quantized = at::quantize_per_tensor(input_cpu,
+      scale,
+      zero_point,
+      input_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+
+  const auto weight_quant_params = compute_quant_params(weight,
+      weight_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+  double w_scale = std::get<0>(weight_quant_params);
+  w_scale = safe_downcast<float>(w_scale);
+  // Weight zero point is expected to always be 0
+  int w_zero_point = 0;
+  const auto weight_cpu_quantized = at::quantize_per_tensor(weight,
+      w_scale,
+      w_zero_point,
+      weight_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+
+  auto pack =
+      callOpByName(
+          "quantized::linear_prepack", "",
+          weight_cpu_quantized,
+          bias);
+
+  auto out_cpu_quant = callOpByName(
+      "quantized::linear", "",
+      input_cpu_quantized,
+      pack[0],
+      out_scale,
+      out_zero_point);
+
+  at::Tensor out_cpu_dequant = at::dequantize(out_cpu_quant[0].toTensor());
+
+  // Vulkan
+  auto input_vk_quantized =
+      at::quantize_per_tensor(
+          input_cpu.vulkan(),
+          scale, zero_point,
+          input_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+
+  at::Tensor out_vk_quant;
+
+  c10::intrusive_ptr<at::native::vulkan::ops::LinearPackedContext> vk_pack =
+      at::native::vulkan::ops::create_linear_context(weight_cpu_quantized.t(), bias);
+
+  out_vk_quant =
+      at::native::vulkan::ops::run_qlinear_context(
+          input_vk_quantized,
+          out_scale, out_zero_point, vk_pack);
+
+  auto out_vk_dequant = at::dequantize(out_vk_quant);
+  auto out_vk_to_cpu_dequant = vulkan_to_cpu(out_vk_dequant, out_cpu_dequant);
+
+  const auto check = almostEqual(out_cpu_dequant, out_vk_to_cpu_dequant, out_scale);
+  if (!check) {
+    long xpos = -1, ypos = -1;
+    if (input_cpu.sizes().size() == 2) {
+      // for 2D tensor get the row col that caused failure
+      showRtol(out_cpu_dequant, out_vk_to_cpu_dequant, &xpos, &ypos);
+    } else {
+      showRtol(out_cpu_dequant, out_vk_to_cpu_dequant);
+    }
+    if (xpos != -1 && ypos != -1) {
+      std::cout << "\nFailure caused on row/col: " << ypos << "/" << xpos << "\n";
+      std::cout << "Input tensor scale: " << scale << " zerop: " << zero_point << "\n";
+      std::cout << "Input tensor row " << ypos << "\n";
+      for (int i = 0; i < input_cpu.sizes()[1]; i++) {
+        std::cout << input_cpu[ypos][i].item<double>() << ", ";
+      }
+      std::cout << "\n";
+
+      std::cout << "Weight tensor scale: " << w_scale << " zerop: " << w_zero_point << "\n";
+      std::cout << "Weight tensor col " << xpos << "\n";
+      for (int i = 0; i < weight.sizes()[1]; i++) {
+        std::cout << weight[xpos][i].item<double>() << ", ";
+      }
+      std::cout << "\n";
+
+      std::cout << "Input tensor quantized row " << ypos << " with dtype " << (input_quant_dtype_int8 ? "QInt8" : "QUInt8") << "\n";
+      for (int i = 0; i < input_cpu.sizes()[1]; i++) {
+        std::cout << input_cpu_quantized[ypos][i].item<double>() << ", ";
+      }
+      std::cout << "\n";
+
+      std::cout << "Weight tensor quantized col " << xpos << " with dtype " << (weight_quant_dtype_int8 ? "QInt8" : "QUInt8") << "\n";
+      for (int i = 0; i < weight.sizes()[1]; i++) {
+        std::cout << weight_cpu_quantized[xpos][i].item<double>() << ", ";
+      }
+      std::cout << "\n";
+
+      std::cout << "bias tensor\n";
+      for (int i = 0; i < bias.sizes()[0]; i++) {
+        std::cout << bias[i].item<double>() << ", ";
+      }
+      std::cout << "\n";
+
+      std::cout << "out_scale: " << out_scale << " out_zero_point: " << out_zero_point << "\n";
+
+      std::cout << "cpu unmatched output: " << out_cpu_dequant[ypos][xpos].item<double>() << "\n";
+      std::cout << "vk unmatched output: " << out_vk_to_cpu_dequant[ypos][xpos].item<double>() << "\n";
+    }
+  }
+  return check;
+}
+
+bool test_quantized_linear_for_dtypes(
+    const at::Tensor& input_cpu,
+    const at::Tensor& weight,
+    const at::Tensor& bias,
+    bool input_quant_dtype_int8,
+    bool weight_quant_dtype_int8) {
+  double out_scale = produce_random_scale();
+  out_scale = safe_downcast<float>(out_scale);
+  int out_zero_point = produce_random_zero_point(
+      input_quant_dtype_int8 ? c10::ScalarType::QInt8 : c10::ScalarType::QUInt8);
+  const auto check = _test_quantized_linear(input_cpu, weight, bias,
+      out_scale, out_zero_point, input_quant_dtype_int8, weight_quant_dtype_int8);
+  if (!check) {
+    // on failure we want to print the exact row/col that causes the
+    // failure in 2D, so we can debug
+    if (input_cpu.sizes().size() != 2) {
+      const auto d =
+        c10::multiply_integers(input_cpu.sizes().cbegin(), input_cpu.sizes().end() - 1);
+      auto input_cpu_2d = input_cpu.view({d, input_cpu.size(-1)});
+
+      _test_quantized_linear(input_cpu_2d, weight, bias, out_scale, out_zero_point,
+          input_quant_dtype_int8, weight_quant_dtype_int8);
+    }
+  }
+  return check;
+}
+
+void test_quantized_linear(
     const at::IntArrayRef input_shape,
     const at::IntArrayRef weight_shape,
-    const at::IntArrayRef bias_shape,
-    double in_scale = 0.13,
-    int in_zero_point = 11,
-    double w_scale = 0.29,
-    int w_zero_point = 19,
-    double out_scale = 0.15,
-    int out_zero_point = 10) {
+    const at::IntArrayRef bias_shape) {
   c10::InferenceMode mode;
 
-  std::vector<int64_t> stride{2, 2};
-  std::vector<int64_t> padding{1, 1};
-  std::vector<int64_t> dilation{1, 1};
-  int64_t groups = 1;
+  const auto input_cpu = produce_random_tensor(input_shape);
 
-  if (random_quantization_params) {
-    // compute appropiate scale and zero point for input, weight and bias
-    in_scale = produce_random_scale(0.001, 1.2);
-    w_scale = produce_random_scale(0.001, 1.2);
-    out_scale = produce_random_scale(0.001, 1.2);
-    in_zero_point = produce_random_zero_point(c10::ScalarType::QUInt8);
-    w_zero_point = produce_random_zero_point(c10::ScalarType::QInt8);
-    out_zero_point = produce_random_zero_point(c10::ScalarType::QUInt8);
-  }
+  const auto weight = produce_random_tensor(weight_shape);
 
-  const float a = 1.26;
-  const float b = 5.97;
-  const float c = 0.59;
+  const auto bias = produce_random_tensor(bias_shape);
 
-  at::Tensor input_cpu = produce_random_tensor(input_shape, a, b, c);
-
-  at::Tensor input_vk = input_cpu.vulkan();
-  at::Tensor input_cpu_q = at::quantize_per_tensor(
-      input_cpu, in_scale, in_zero_point, c10::ScalarType::QUInt8);
-  at::Tensor input_vk_q = at::quantize_per_tensor(
-      input_vk, in_scale, in_zero_point, c10::ScalarType::QUInt8);
-
-  at::Tensor weight_cpu = produce_random_tensor(weight_shape, a, b, c);
-  at::Tensor weight_cpu_q = at::quantize_per_tensor(
-      weight_cpu, w_scale, w_zero_point, c10::ScalarType::QInt8);
-
-  at::Tensor bias_cpu = produce_random_tensor(bias_shape, a, b, c);
-
-  at::globalContext().setReleaseWeightsWhenPrepacking(false);
-
-  const auto prepack_cpu = callOpByName(
-      "quantized::conv2d_prepack",
-      "",
-      weight_cpu_q,
-      bias_cpu,
-      stride,
-      padding,
-      dilation,
-      groups)[0];
-
-  at::Tensor output_cpu_q = callOpByName(
-                                "quantized::conv2d",
-                                "",
-                                input_cpu_q,
-                                prepack_cpu,
-                                stride,
-                                padding,
-                                dilation,
-                                groups,
-                                out_scale,
-                                out_zero_point)[0]
-                                .toTensor();
-
-  at::Tensor output_cpu_deq = at::dequantize(output_cpu_q);
-
-  // convert quantized context
-  const auto prepack_vulkan = at::native::vulkan::ops::convert_qconv2d_context(
-      prepack_cpu.toCustomClass<ConvPackedParamsBase<2>>(),
-      c10::nullopt,
-      c10::nullopt);
-
-  // run vulkan quantized conv2d
-  const auto vulkan_output = callOpByName(
-      "vulkan_prepack::run_qconv2d_context",
-      "",
-      input_vk_q,
-      out_scale,
-      out_zero_point,
-      prepack_vulkan);
-
-  at::Tensor output_vk_q = vulkan_output[0].toTensor();
-  at::Tensor output_vk_deq = at::dequantize(output_vk_q);
-  at::Tensor output_vk_deq_cpu = output_vk_deq.cpu();
-
-  // check
-  const auto check = almostEqual(
-      output_cpu_deq, output_vk_deq_cpu, safe_downcast<float>(out_scale));
-  if (!check) {
-    const auto vk_q_error =
-        at::abs(output_vk_deq_cpu - output_cpu_deq).max().item<double>();
-    std::cout << "Failed with shapes: input " << input_shape << " weight "
-              << weight_shape << " bias " << bias_shape
-              << " and params: in_scale " << in_scale << " weight_scale "
-              << w_scale << " out_scale " << out_scale << " in_zero_point "
-              << in_zero_point << " w_zero_point " << w_zero_point
-              << " out_zero_point " << out_zero_point << std::endl;
-    std::cout << "error: " << vk_q_error << std::endl;
-  }
-
+  bool check = test_quantized_linear_for_dtypes(input_cpu, weight, bias,
+      false, true);
+  ASSERT_TRUE(check);
+  check = test_quantized_linear_for_dtypes(input_cpu, weight, bias,
+      true, true);
   ASSERT_TRUE(check);
 }
 
-TEST_F(VulkanAPITest, convert_qconv2d_context) {
-  test_convert_qconv2d_context(false, {1, 3, 8, 8}, {1, 3, 3, 3}, {1});
-  test_convert_qconv2d_context(false, {1, 4, 224, 128}, {16, 4, 3, 3}, {16});
+TEST_F(VulkanAPITest, linear_2d_flat) {
+  test_quantized_linear({1, 100}, {1, 100}, {1});
+}
 
-  for (int i = 0; i < 10; i += 1) {
-    test_convert_qconv2d_context(true, {1, 3, 8, 8}, {1, 3, 3, 3}, {1});
-    test_convert_qconv2d_context(true, {1, 4, 224, 128}, {16, 4, 3, 3}, {16});
-  }
+TEST_F(VulkanAPITest, linear_2d_small) {
+  test_quantized_linear({2, 3}, {4, 3}, {4});
+}
+
+TEST_F(VulkanAPITest, linear_2d_large) {
+  test_quantized_linear({1287, 17}, {23, 17}, {23});
+}
+
+TEST_F(VulkanAPITest, linear_3d_flat) {
+  test_quantized_linear({1, 1, 37}, {41, 37}, {41});
+}
+
+TEST_F(VulkanAPITest, linear_3d_small) {
+  test_quantized_linear({2, 3, 4}, {5, 4}, {5});
+}
+
+TEST_F(VulkanAPITest, linear_3d_large) {
+  test_quantized_linear({23, 17, 41}, {15, 41}, {15});
+}
+
+TEST_F(VulkanAPITest, linear_4d_flat) {
+  test_quantized_linear({1, 1, 1, 37}, {41, 37}, {41});
+}
+
+TEST_F(VulkanAPITest, linear_4d_small) {
+  test_quantized_linear({2, 3, 4, 5}, {6, 5}, {6});
+}
+
+TEST_F(VulkanAPITest, linear_4d_large) {
+  test_quantized_linear({9, 13, 11, 17}, {23, 17}, {23});
 }
 
 } // namespace

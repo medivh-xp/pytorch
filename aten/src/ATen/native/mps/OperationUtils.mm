@@ -1,9 +1,46 @@
 //  Copyright © 2022 Apple Inc.
-
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/mps/MPSAllocatorInterface.h>
+#include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/mps/OperationUtils.h>
 
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/scalar_tensor.h>
+#endif
+
 namespace at::native::mps {
+
+void dispatch_sync_with_rethrow(dispatch_queue_t queue, void (^block)()) {
+  __block std::optional<std::exception_ptr> block_exception;
+  dispatch_sync(queue, ^() {
+    try {
+      block();
+    } catch (...) {
+      block_exception = std::current_exception();
+    }
+  });
+  if (block_exception) {
+    std::rethrow_exception(*block_exception);
+  }
+}
+
+/**
+ * Computes distance from lowest to highest element offset in given tensor.
+ */
+size_t compute_storage_numel_distance(const at::Tensor& t) {
+  size_t rc = 1;
+  if (t.numel() == 0) {
+    return 0;
+  }
+  for (const auto i : c10::irange(t.dim())) {
+    assert(t.size(i) > 0);
+    rc += (t.size(i) - 1) * t.stride(i);
+  }
+  return rc;
+}
 
 void runMPSGraph(MPSStream* mpsStream, MPSGraph* mpsGraph, NSDictionary* feeds, NSDictionary* results) {
   mpsStream->executeMPSGraph(mpsGraph, feeds, results, SyncType::COMMIT_ADAPTIVE);
@@ -152,8 +189,7 @@ std::string scalarToMetalTypeString(const c10::ScalarType& scalar_type) {
   }
 }
 
-NSArray<NSNumber*>* getTensorAxes(const Tensor& t) {
-  int64_t ndim = t.dim();
+static NSArray<NSNumber*>* getTensorAxes(int64_t ndim) {
   auto axes = [NSMutableArray<NSNumber*> arrayWithCapacity:ndim];
   for (const auto i : c10::irange(ndim)) {
     axes[i] = [NSNumber numberWithInteger:i];
@@ -161,7 +197,15 @@ NSArray<NSNumber*>* getTensorAxes(const Tensor& t) {
   return axes;
 }
 
-NSArray<NSNumber*>* getTensorAxes(const Tensor& t, at::OptionalIntArrayRef dim) {
+NSArray<NSNumber*>* getTensorAxes(const Tensor& t) {
+  return getTensorAxes(t.dim());
+}
+
+static NSArray<NSNumber*>* getTensorAxes(const IntArrayRef& sizes) {
+  return getTensorAxes(sizes.size());
+}
+
+NSArray<NSNumber*>* getTensorAxes(const IntArrayRef& sizes, at::OptionalIntArrayRef dim) {
   if (dim.has_value() && dim.value().size() != 0) {
     IntArrayRef dimValues = dim.value();
     int ndim = dimValues.size();
@@ -173,7 +217,7 @@ NSArray<NSNumber*>* getTensorAxes(const Tensor& t, at::OptionalIntArrayRef dim) 
     return axes;
   }
 
-  return getTensorAxes(t);
+  return getTensorAxes(sizes);
 }
 
 std::string getMPSShapeString(MPSShape* shape) {
@@ -378,6 +422,24 @@ void resize_tensor(Tensor* output) {
   output->resize_(output->sizes());
 }
 
+Tensor wrapped_scalar_tensor_mps(const Scalar& scalar, const Device device) {
+  // Copied and modified from aten/stc/ATen/ScalarOps.h
+  // as MPS doesn't support float64 tensor.
+  Tensor tensor;
+  if (scalar.isFloatingPoint()) {
+    tensor = at::scalar_tensor(scalar, at::device(device).dtype(at::kFloat));
+  } else if (scalar.isBoolean()) {
+    tensor = at::scalar_tensor(scalar, at::device(device).dtype(at::kBool));
+  } else if (scalar.isComplex()) {
+    tensor = at::scalar_tensor(scalar, at::device(device).dtype(at::kComplexDouble));
+  } else {
+    AT_ASSERT(scalar.isIntegral(false));
+    tensor = at::scalar_tensor(scalar, at::device(device).dtype(at::kLong));
+  }
+  tensor.unsafeGetTensorImpl()->set_wrapped_number(true);
+  return tensor;
+}
+
 MPSGraph* make_mps_graph() {
   MPSGraph* mpsGraph = [[MPSGraph new] autorelease];
   return mpsGraph;
@@ -441,6 +503,17 @@ string get_mem_format_string(c10::MemoryFormat memory_format) {
 }
 
 MPSGraphCache* MPSGraphCache::_instance_cache = nullptr;
+
+void MPSGraphCache::profileCachedGraph(const CacheEntry& cacheEntry) const {
+  auto& profiler = getMPSProfiler();
+  if (profiler.isOperationProfilingEnabled()) {
+    std::string graphKey = cacheEntry.key_;
+    // for interval-based signpost tracing, we begin the interval here to be able
+    // to measure the time it takes to compile the graphs (if graph newly created),
+    // and also the time potentially spent on gather/scatter of graph's input tensors
+    profiler.beginProfileKernel(cacheEntry.cachedGraph_->graph(), graphKey, true);
+  }
+}
 
 class MPSGraphCacheCallback : public IMpsAllocatorCallback {
  public:

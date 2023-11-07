@@ -1,13 +1,14 @@
 #include <c10/core/TensorImpl.h>
 
-#include <c10/core/Backend.h>
+#include <c10/core/CopyBytes.h>
 #include <c10/core/InferenceMode.h>
 #include <c10/core/SymIntArrayRef.h>
-#include <c10/core/WrapDimMinimal.h>
 #include <c10/core/impl/LocalDispatchKeySet.h>
 #include <c10/core/impl/PyInterpreter.h>
 #include <c10/core/impl/TorchDispatchModeTLS.h>
+#include <c10/util/Logging.h>
 #include <c10/util/Optional.h>
+#include <c10/util/accumulate.h>
 #include <c10/util/irange.h>
 
 #include <utility>
@@ -72,9 +73,7 @@ void TensorImpl::_set_fw_grad(
   autograd_meta_->set_fw_grad(new_grad, self, level, is_inplace_op);
 }
 
-TensorImpl::~TensorImpl() {
-  pyobj_slot_.destroy_pyobj_if_needed();
-}
+TensorImpl::~TensorImpl() = default;
 
 TensorImpl::TensorImpl(
     Storage&& storage,
@@ -232,20 +231,22 @@ normalize_sym_sizes_strides(SymIntArrayRef sizes, SymIntArrayRef strides) {
   // Look for a SymNode to dispatch on
   SymNode base;
   bool all_hinted = true;
+  // NB: sizes/strides guaranteed to be positive, so only need
+  // is_heap_allocated
   for (const auto& s : sizes) {
     if (all_hinted && !s.has_hint()) {
       all_hinted = false;
     }
-    if (!base && s.is_symbolic()) {
-      base = s.toSymNodeImpl();
+    if (!base && s.is_heap_allocated()) {
+      base = s.toSymNode();
     }
   }
   for (const auto& s : strides) {
     if (all_hinted && !s.has_hint()) {
       all_hinted = false;
     }
-    if (!base && s.is_symbolic()) {
-      base = s.toSymNodeImpl();
+    if (!base && s.is_heap_allocated()) {
+      base = s.toSymNode();
     }
   }
   if (!base || all_hinted) {
@@ -500,7 +501,7 @@ DEFINE_SYMBOOL_COMPUTE(compute_non_overlapping_and_dense, is_non_overlapping_and
 // test_aot_autograd_symbolic_exhaustive_nn_functional_unfold_cpu_float32 to run
 // very slowly.
 
-static bool definitely_true(SymBool b) {
+static bool definitely_true(const SymBool& b) {
   return b.has_hint() && b.guard_bool(__FILE__, __LINE__);
 }
 
@@ -579,7 +580,7 @@ void TensorImpl::release_resources() {
   if (storage_) {
     storage_ = {};
   }
-  pyobj_slot_.destroy_pyobj_if_needed();
+  pyobj_slot_.maybe_destroy_pyobj();
 }
 
 #ifndef C10_DISABLE_TENSORIMPL_EXTENSIBILITY
@@ -588,9 +589,25 @@ bool TensorImpl::has_storage() const {
 }
 #endif
 
+void TensorImpl::throw_cannot_call_with_symbolic(const char* meth) const {
+  TORCH_CHECK_ALWAYS_SHOW_CPP_STACKTRACE(
+      false, "Cannot call ", meth, "() on tensor with symbolic sizes/strides");
+}
+
 void TensorImpl::throw_storage_access_error() const {
+  if (extra_meta_ && extra_meta_->custom_storage_error_msg_) {
+    TORCH_CHECK(false, *extra_meta_->custom_storage_error_msg_);
+  }
   TORCH_CHECK_NOT_IMPLEMENTED(
       false, "Cannot access storage of ", tensorimpl_type_name());
+}
+
+void TensorImpl::throw_data_ptr_access_error() const {
+  if (extra_meta_ && extra_meta_->custom_data_ptr_error_msg_) {
+    TORCH_CHECK(false, *extra_meta_->custom_data_ptr_error_msg_);
+  }
+  TORCH_CHECK(
+      false, "Cannot access data pointer of Tensor that doesn't have storage");
 }
 
 bool TensorImpl::is_contiguous_custom(at::MemoryFormat memory_format) const {
@@ -618,7 +635,9 @@ bool TensorImpl::is_non_overlapping_and_dense_custom() const {
 }
 
 IntArrayRef TensorImpl::sizes_custom() const {
-  if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
+  if (C10_UNLIKELY(
+          matches_python_custom(SizesStridesPolicy::CustomSizes) ||
+          has_symbolic_sizes_strides_)) {
     return pyobj_slot_.load_pyobj_interpreter()->sizes(this);
   }
   return sizes_default();
@@ -653,7 +672,9 @@ c10::Device TensorImpl::device_custom() const {
 }
 
 IntArrayRef TensorImpl::strides_custom() const {
-  if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomStrides))) {
+  if (C10_UNLIKELY(
+          matches_python_custom(SizesStridesPolicy::CustomStrides) ||
+          has_symbolic_sizes_strides_)) {
     return pyobj_slot_.load_pyobj_interpreter()->strides(this);
   }
   return strides_default();
@@ -798,9 +819,6 @@ c10::intrusive_ptr<TensorImpl> TensorImpl::shallow_copy_and_detach_core(
       /*dest_impl=*/impl.get(),
       /*version_counter=*/std::forward<VariableVersion>(version_counter),
       /*allow_tensor_metadata_change=*/allow_tensor_metadata_change);
-
-  impl->refresh_numel();
-  impl->refresh_contiguous();
   return impl;
 }
 
@@ -850,6 +868,7 @@ void TensorImpl::copy_generic_tensor_metadata(
       src_impl->is_non_overlapping_and_dense_;
   dest_impl->is_wrapped_number_ = src_impl->is_wrapped_number_;
   dest_impl->reserved_ = src_impl->reserved_;
+  dest_impl->numel_ = src_impl->numel_;
   if (src_impl->extra_meta_ != nullptr) {
     dest_impl->extra_meta_ = src_impl->extra_meta_->clone();
   }
@@ -943,7 +962,7 @@ void TensorImpl::Extend(int64_t num, float growthPct) {
       static_cast<int64_t>(std::ceil(
           static_cast<float>(sizes_and_strides_.size_at_unchecked(0)) *
           (1 + growthPct / 100))));
-  auto oldData = std::move(storage_.data_ptr());
+  auto oldData = std::move(storage_.mutable_data_ptr());
   auto oldSize = numel_;
   Resize(std::move(newCapacity));
   auto* newData = raw_mutable_data(data_type_);
@@ -993,7 +1012,7 @@ void TensorImpl::ReserveSpace(int64_t outer_dim) {
     return;
   }
   // Old data is discarded
-  storage_.data_ptr().clear();
+  storage_.mutable_data_ptr().clear();
   auto oldSize = numel_;
   SmallVector<int64_t, 5> oldDims(
       sizes_and_strides.begin(), sizes_and_strides.end());
@@ -1106,7 +1125,7 @@ void TensorImpl::ShareExternalPointer(
   }
 }
 
-void clone_symvec(SymIntArrayRef src, SymDimVector& dst) {
+static void clone_symvec(SymIntArrayRef src, SymDimVector& dst) {
   dst.clear();
   dst.reserve(src.size());
   for (const auto& i : src) {
@@ -1125,7 +1144,8 @@ void TensorImpl::set_sizes_and_strides(
   auto int_sizes = asIntArrayRefSlowOpt(sizes);
   auto int_strides = asIntArrayRefSlowOpt(strides);
   if (int_sizes && int_strides &&
-      (!storage_offset.has_value() || !storage_offset->is_symbolic()) &&
+      // NB: storage_offset guaranteed to be positive
+      (!storage_offset.has_value() || !storage_offset->is_heap_allocated()) &&
       !has_symbolic_sizes_strides_) {
     set_sizes_and_strides(*int_sizes, *int_strides);
     if (storage_offset.has_value())

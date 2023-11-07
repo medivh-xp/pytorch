@@ -1,9 +1,11 @@
 #include <torch/csrc/autograd/input_buffer.h>
 
+#include <ATen/CachedTensorUtils.h>
 #include <ATen/LegacyBatchedTensorImpl.h>
 #include <ATen/SparseCsrTensorUtils.h>
 #include <ATen/TensorOperators.h>
 #include <ATen/TensorSubclassLikeUtils.h>
+#include <ATen/core/grad_mode.h>
 #include <ATen/native/SparseTensorUtils.h>
 
 #include <c10/core/DeviceGuard.h>
@@ -77,7 +79,8 @@ bool can_accumulate_inplace(const Variable& v) {
       v.is_non_overlapping_and_dense() &&
 
       // and we hold the last reference
-      v.use_count() == 1 && v.has_storage() && v.storage().use_count() == 1);
+      at::caching::adjusted_use_count(v) == 1 && v.has_storage() &&
+      v.storage().use_count() == 1);
 }
 } // anonymous namespace
 
@@ -104,6 +107,7 @@ static void accumulate(
   //  5) The other Tensor is not a Tensor subclass (except sparse), since
   //     it's hard to predict the semantics of arbitrary subclass behavior.
 
+  // NOLINTNEXTLINE(bugprone-branch-clone)
   if (at::GradMode::is_enabled()) {
     buffer[pos] = old_var + var;
   } else if (

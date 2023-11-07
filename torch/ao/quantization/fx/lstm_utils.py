@@ -72,6 +72,12 @@ def _get_lstm_with_individually_observed_parts(
         float_lstm.batch_first, float_lstm.dropout, float_lstm.bidirectional)
     quantizable_lstm.qconfig = float_lstm.qconfig
 
+    for idx in range(float_lstm.num_layers):
+        quantizable_lstm.layers[idx] = torch.ao.nn.quantizable.modules.rnn._LSTMLayer.from_float(float_lstm,
+                                                                                                 idx,
+                                                                                                 float_lstm.qconfig,
+                                                                                                 batch_first=False)
+
     # Build QConfigMapping for the LSTM cell
     # Note: FloatFunctional qconfigs will be configured separately below
     cell_qm = QConfigMapping().set_global(float_lstm.qconfig)  # type: ignore[arg-type]
@@ -115,7 +121,7 @@ def _get_lstm_with_individually_observed_parts(
             if op_index not in op_index_to_activation_post_process_ctr:
                 continue
             assert len(node.users) == 1
-            activation_post_process_name = list(node.users.keys())[0].name
+            activation_post_process_name = next(iter(node.users.keys())).name
             activation_post_process_ctr = op_index_to_activation_post_process_ctr[op_index]
             if activation_post_process_ctr is not None:
                 setattr(cell, activation_post_process_name, activation_post_process_ctr())

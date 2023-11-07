@@ -108,8 +108,8 @@ def get_conda_packages(run_lambda):
                 "soumith",
                 "mkl",
                 "magma",
-                "mkl",
                 "triton",
+                "optree",
             }
         )
     )
@@ -137,7 +137,8 @@ def get_nvidia_driver_version(run_lambda):
 def get_gpu_info(run_lambda):
     if get_platform() == 'darwin' or (TORCH_AVAILABLE and hasattr(torch.version, 'hip') and torch.version.hip is not None):
         if TORCH_AVAILABLE and torch.cuda.is_available():
-            return torch.cuda.get_device_name(None)
+            return torch.cuda.get_device_name(None) + \
+                (" ({})".format(torch.cuda.get_device_properties(0).gcnArchName) if torch.version.hip is not None else "")
         return None
     smi = get_nvidia_smi()
     uuid_regex = re.compile(r' \(UUID: .+?\)')
@@ -390,6 +391,8 @@ def get_pip_packages(run_lambda):
                     "mypy",
                     "flake8",
                     "triton",
+                    "optree",
+                    "onnx",
                 }
             )
         )
@@ -433,9 +436,13 @@ def get_env_info():
         if not hasattr(torch.version, 'hip') or torch.version.hip is None:  # cuda version
             hip_compiled_version = hip_runtime_version = miopen_runtime_version = 'N/A'
         else:  # HIP version
+            def get_version_or_na(cfg, prefix):
+                _lst = [s.rsplit(None, 1)[-1] for s in cfg if prefix in s]
+                return _lst[0] if _lst else 'N/A'
+
             cfg = torch._C._show_config().split('\n')
-            hip_runtime_version = [s.rsplit(None, 1)[-1] for s in cfg if 'HIP Runtime' in s][0]
-            miopen_runtime_version = [s.rsplit(None, 1)[-1] for s in cfg if 'MIOpen' in s][0]
+            hip_runtime_version = get_version_or_na(cfg, 'HIP Runtime')
+            miopen_runtime_version = get_version_or_na(cfg, 'MIOpen')
             cuda_version_str = 'N/A'
             hip_compiled_version = torch.version.hip
     else:

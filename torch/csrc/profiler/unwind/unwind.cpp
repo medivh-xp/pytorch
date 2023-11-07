@@ -1,8 +1,8 @@
 #include <c10/util/Exception.h>
 #include <torch/csrc/profiler/unwind/unwind.h>
 
-#if !defined(__linux__) || !defined(__x86_64__) || !defined(__has_include) || \
-    !__has_include("ext/stdio_filebuf.h")
+#if !defined(__linux__) || !(defined(__x86_64__) || defined(__aarch64__)) || \
+    !defined(__has_include) || !__has_include("ext/stdio_filebuf.h")
 namespace torch {
 namespace unwind {
 std::vector<void*> unwind() {
@@ -27,12 +27,13 @@ Stats stats() {
 } // namespace torch
 
 #else
+
 #include <c10/util/flat_hash_map.h>
 #include <elf.h>
-#include <limits.h>
 #include <link.h>
 #include <linux/limits.h>
 #include <algorithm>
+#include <climits>
 #include <iostream>
 #include <unordered_map>
 #include <vector>
@@ -95,7 +96,7 @@ struct LibraryInfo {
   EHFrameHdr eh_frame_hdr_;
 };
 
-const char* process_name() {
+static const char* process_name() {
   static char name[PATH_MAX + 1] = "";
   if (*name == '\0') {
     ssize_t len = readlink("/proc/self/exe", name, PATH_MAX);
@@ -140,7 +141,7 @@ struct UnwindCache {
             }
             if (segments[i].p_type == PT_GNU_EH_FRAME) {
               std::string library_name = info->dlpi_name;
-              if (library_name == "") {
+              if (library_name.empty()) {
                 library_name = process_name();
               }
               auto eh_frame_hdr =
@@ -153,8 +154,7 @@ struct UnwindCache {
               return 0;
             }
           }
-          TORCH_WARN_ONCE(
-              "Did not find a PT_GNU_EH_FRAME segment for ", info->dlpi_name);
+          self->libraries_with_no_unwind_.emplace_back(info->dlpi_name);
           return 0;
         },
         this);
@@ -194,39 +194,51 @@ struct UnwindCache {
       // once per frame that cannot be unwound.
       TORCH_WARN("Unsupported unwinding pattern: ", err.what());
     }
-    auto r = ip_cache_.insert_or_assign(addr, std::move(unwinder));
+    auto r = ip_cache_.insert_or_assign(addr, unwinder);
     return r.first->second;
   }
 
-  const LibraryInfo& libraryFor(uint64_t addr) {
+  const LibraryInfo* findLibraryFor(uint64_t addr) {
     Version current_version = currentVersion();
     if (current_version.subs_ != last_version_.subs_) {
       refreshLibraries();
       last_version_ = current_version;
     }
-    auto& r = searchFor(addr);
-    if (addr >= r.last_addr()) {
+    auto* r = searchFor(addr);
+    if (!r) {
       if (current_version.adds_ != last_version_.adds_) {
         refreshLibraries();
         last_version_ = current_version;
       }
-      auto& r = searchFor(addr);
-      if (addr >= r.last_addr()) {
-        throw UnwindError("addr not in range of known libraries");
-      }
-      return r;
+      r = searchFor(addr);
     }
     return r;
   }
+
+  const LibraryInfo& libraryFor(uint64_t addr) {
+    auto* r = findLibraryFor(addr);
+    if (!r) {
+      for (const auto& l : libraries_with_no_unwind_) {
+        TORCH_WARN("Did not find a PT_GNU_EH_FRAME segment for ", l);
+      }
+      libraries_with_no_unwind_.clear();
+      throw UnwindError("addr not in range of known libraries");
+    }
+    return *r;
+  }
+
   torch::unwind::Stats stats() {
     return stats_;
   }
 
  private:
-  const LibraryInfo& searchFor(uint64_t addr) {
+  const LibraryInfo* searchFor(uint64_t addr) {
+    if (all_libraries_.empty()) {
+      return nullptr;
+    }
     uint64_t low = 0;
     uint64_t high = all_libraries_.size();
-    while (low + 1 != high) {
+    while (low + 1 < high) {
       auto mid = (low + high) / 2;
       if (addr < all_libraries_.at(mid).load_bias()) {
         high = mid;
@@ -234,7 +246,11 @@ struct UnwindCache {
         low = mid;
       }
     }
-    return all_libraries_.at(low);
+    LibraryInfo* r = &all_libraries_.at(low);
+    if (addr < r->load_bias() || addr >= r->last_addr()) {
+      return nullptr;
+    }
+    return r;
   }
 
   // sorted by load_bias
@@ -245,14 +261,17 @@ struct UnwindCache {
 
   // to keep track of whether we need to refresh this info
   Version last_version_;
+
+  std::vector<std::string> libraries_with_no_unwind_;
 };
 
 static UnwindCache unwind_cache;
 static std::shared_timed_mutex cache_mutex_;
 
+extern "C" void unwind_c(std::vector<void*>* result, int64_t rsp, int64_t rbp);
 extern "C" void unwind_c(std::vector<void*>* result, int64_t rsp, int64_t rbp) {
   std::shared_lock lock(cache_mutex_);
-  UnwindState state;
+  UnwindState state{};
   state.rip = *(int64_t*)(rsp);
   // +8 because we saved rsp after the return address was already pushed
   // to the stack
@@ -282,9 +301,16 @@ extern "C" void unwind_entry(std::vector<void*>* result);
 __asm__(
     ".global unwind_entry\n"
     "unwind_entry:\n"
+#ifdef __aarch64__
+    "mov x1, sp;\n"
+    "mov x2, x29;\n"
+    "b unwind_c;\n"
+#else
     "mov %rsp, %rsi;\n"
     "mov %rbp, %rdx;\n"
-    "jmp unwind_c;\n");
+    "jmp unwind_c;\n"
+#endif
+);
 
 namespace torch {
 namespace unwind {
@@ -294,42 +320,90 @@ std::vector<void*> unwind() {
   return frames;
 }
 
-#ifdef FBCODE_CAFFE2
-// in CUDA binaries, we have to use the internal symbolizer because
-// addr2line seems to hang.
-__attribute__((weak))
-#endif
-std::vector<Frame>
-symbolize(const std::vector<void*>& frames) {
-  // we need to make sure we don't write more than 64k bytes to
-  // a pipe before reading the results. Otherwise the buffer may
-  // get filled and block before we read the results.
-  // Each line is < 32 characters,
-  // so this limits us to < 32k bytes before we read rules.
-  constexpr int BLOCK = 1024;
+c10::optional<std::pair<std::string, uint64_t>> libraryFor(void* addr) {
+  if (!addr) {
+    return c10::nullopt;
+  }
+  std::shared_lock lock(cache_mutex_);
+  const LibraryInfo* library_info = unwind_cache.findLibraryFor((uint64_t)addr);
+  if (!library_info) {
+    return c10::nullopt;
+  }
+  return std::make_pair(
+      library_info->name(), (uint64_t)addr - library_info->load_bias());
+}
+
+struct Symbolizer {
+  static std::lock_guard<std::mutex> guard() {
+    static std::mutex mutex;
+    return std::lock_guard<std::mutex>(mutex);
+  }
+  static Symbolizer& get() {
+    static Symbolizer singleton;
+    return singleton;
+  }
+  void request(void* addr) {
+    if (frame_map_.count(addr)) {
+      return;
+    }
+    auto maybe_library = libraryFor(addr);
+    if (!maybe_library) {
+      frame_map_[addr] = Frame{"??", "<unwind unsupported>", 0};
+      return;
+    }
+    has_pending_results_ = true;
+    auto& entry = getOrCreate(maybe_library->first);
+    entry.queried.push_back(addr);
+    auto libaddress = maybe_library->second - 1;
+    entry.comm->out() << (void*)libaddress << "\n";
+    // we need to make sure we don't write more than 64k bytes to
+    // a pipe before reading the results. Otherwise the buffer may
+    // get filled and block before we read the results.
+    // Each line is < 32 characters,
+    // so this limits us to < 32k bytes before we read rules.
+    if (entry.queried.size() - entry.completed > BLOCK) {
+      entry.comm->out().flush();
+      readPendingResults(entry);
+    }
+  }
+  const Frame& lookup(void* addr) {
+    if (has_pending_results_) {
+      for (auto& kv : entries_) {
+        kv.second.comm->out().flush();
+      }
+      for (auto& kv : entries_) {
+        readPendingResults(kv.second);
+      }
+      has_pending_results_ = false;
+    }
+    return frame_map_.at(addr);
+  }
+
+ private:
+  static constexpr int BLOCK = 1024;
   struct Entry {
-    const LibraryInfo* lib;
     std::unique_ptr<Communicate> comm;
     std::vector<void*> queried;
     size_t completed = 0;
   };
-  std::vector<Entry> entries;
-  auto get_or_create = [&](const LibraryInfo& info) -> Entry& {
-    for (auto& e : entries) {
-      if (e.lib->load_bias() == info.load_bias()) {
-        return e;
-      }
+  ska::flat_hash_map<std::string, Entry> entries_;
+  ska::flat_hash_map<void*, Frame> frame_map_;
+  bool has_pending_results_ = true;
+
+  Entry& getOrCreate(const std::string& name) {
+    auto it = entries_.find(name);
+    if (it == entries_.end()) {
+      const char* args[] = {
+          "addr2line", "-C", "-f", "-e", name.c_str(), nullptr};
+      it = entries_
+               .insert_or_assign(
+                   name,
+                   Entry{std::make_unique<Communicate>("addr2line", args), {}})
+               .first;
     }
-    const char* args[] = {
-        "addr2line", "-C", "-f", "-e", info.name().c_str(), nullptr};
-    entries.emplace_back(
-        Entry{&info, std::make_unique<Communicate>("addr2line", args), {}});
-    return entries.back();
-  };
-
-  std::unordered_map<void*, Frame> results_map;
-
-  auto read_pending_results = [&](Entry& e) {
+    return it->second;
+  }
+  void readPendingResults(Entry& e) {
     size_t N = e.queried.size();
     for (; e.completed < N; ++e.completed) {
       Frame frame;
@@ -340,41 +414,26 @@ symbolize(const std::vector<void*>& frames) {
       frame.filename = filename_lineno.substr(0, colon);
       std::string lineno_str = filename_lineno.substr(colon + 1);
       frame.lineno = lineno_str == "?" ? 0 : std::stoi(lineno_str);
-      results_map[e.queried[e.completed]] = std::move(frame);
+      frame_map_[e.queried[e.completed]] = std::move(frame);
     }
   };
+};
+
+#ifndef FBCODE_CAFFE2
+std::vector<Frame> symbolize(const std::vector<void*>& frames) {
+  auto guard = Symbolizer::guard();
+  Symbolizer& s = Symbolizer::get();
   for (auto f : frames) {
-    if (f == nullptr) {
-      continue;
-    }
-    auto& entry = get_or_create(unwind_cache.libraryFor((uint64_t)f));
-    entry.queried.push_back(f);
-    auto libaddress = ((uint64_t)f - entry.lib->load_bias() - 1);
-    entry.comm->out() << (void*)libaddress << "\n";
-    if (entry.queried.size() - entry.completed > BLOCK) {
-      entry.comm->out().flush();
-      read_pending_results(entry);
-    }
+    s.request(f);
   }
-
-  for (auto& e : entries) {
-    e.comm->out().flush();
-  }
-
-  for (auto& e : entries) {
-    read_pending_results(e);
-  }
-
   std::vector<Frame> results;
+  results.reserve(frames.size());
   for (auto f : frames) {
-    if (f == nullptr) {
-      results.emplace_back(Frame{"??", "<unwind unsupported>", 0});
-      continue;
-    }
-    results.emplace_back(results_map.at(f));
+    results.emplace_back(s.lookup(f));
   }
   return results;
 }
+#endif
 
 Stats stats() {
   return unwind_cache.stats();

@@ -5,7 +5,7 @@ import sys
 import traceback
 import warnings
 
-from pkg_resources import packaging
+import packaging.version
 
 MIN_CUDA_VERSION = packaging.version.parse("11.6")
 MIN_ROCM_VERSION = packaging.version.parse("5.4")
@@ -152,9 +152,9 @@ def check_dynamo(backend, device, err_msg):
         import torch._dynamo as dynamo
 
         if device == "cuda":
-            import torch._inductor.utils as utils
+            from torch.utils._triton import has_triton
 
-            if not utils.has_triton():
+            if not has_triton():
                 print(
                     f"WARNING: CUDA available but triton cannot be used. "
                     f"Your GPU may not be supported. "
@@ -215,9 +215,8 @@ def main():
         f"ROCM version: {rocm_ver}\n"
     )
     for args in _SANITY_CHECK_ARGS:
-        # TODO remove check when 3.11 is supported
-        if sys.version_info >= (3, 11):
-            warnings.warn("Dynamo not yet supported in Python 3.11. Skipping check.")
+        if sys.version_info >= (3, 12):
+            warnings.warn("Dynamo not yet supported in Python 3.12. Skipping check.")
             continue
         check_dynamo(*args)
     print("All required checks passed")

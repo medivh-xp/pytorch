@@ -179,16 +179,17 @@ void fbgemm_spmdm_report_error_(
           0 <= idx && idx < N,
           "Index ",
           i,
-          " is out of bounds: ",
+          " of input takes value ",
           idx,
-          ", range 0 to ",
-          N);
+          " which is not in the valid range [0, ",
+          N,
+          ")");
     }
   }
   TORCH_CHECK(
       offsets[output_size] == index_size,
-      "Yout input seems to be incorrect: the last offset value should be "
-      "the size of the indices tensor, but it appears not.");
+      "Your input appears to be incorrect: the last offset value should be "
+       "the size of the indices tensor, but it seems not to be the case.");
 }
 } // namespace
 
@@ -226,14 +227,14 @@ index_select_add(
       if (offsets.numel() > 0) {
         std::memcpy(
             offsets_include_last.data(),
-            offsets.data_ptr<index_t>(),
+            offsets.const_data_ptr<index_t>(),
             sizeof(index_t) * offsets.numel());
       }
       offsets_include_last[offsets.numel()] = select_indices.numel();
       offsets_data = offsets_include_last.data();
     }
 #if defined(USE_FBGEMM)
-    bool isbf16 = std::is_same<data_t, at::Half>::value ? false : true;
+    constexpr bool isbf16 = std::is_same_v<data_t, at::Half> ? false : true;
     auto kernel_16bit_index_t = fbgemm_kernel_cache
         ? fbgemm_kernel_cache
               ->getCallback</* has_weight */ false, index_t, uint16_t>(ddim)
@@ -244,7 +245,8 @@ index_select_add(
               /* prefetch */ 16,
               /* is_weight_positional */ false,
               /* use_offsets */ true,
-              /* isbf16*/ isbf16);
+              /* is_bf16_out */ isbf16,
+              /* is_bf16_in */ isbf16);
     at::parallel_for(
         0, output_size, 1, [&](index_t start_idx, index_t end_idx) {
           bool success = kernel_16bit_index_t(
@@ -289,7 +291,7 @@ index_select_add(
           for (int64_t i = start_idx; i < end_idx; i++) {
             // Convert FP32 intermediate buffer result back to 16 bit for
             // output dtype
-            if (std::is_same<data_t, at::Half>::value) {
+            if constexpr (std::is_same<data_t, at::Half>::value) {
               // FP16
               for (const auto d : c10::irange(ddim)) {
                 (output_data + i * ddim)[d] =
@@ -330,7 +332,7 @@ index_select_add(
     auto numel = add_indices.numel();
 
     Tensor src_fp32 = at::empty({ddim}, src.options().dtype(at::kFloat));
-    auto* src_data_fp32 = src_fp32.data_ptr<float>();
+    auto* src_data_fp32 = src_fp32.mutable_data_ptr<float>();
 
     // Initialize the intermediate output buffer to be 0.
     Tensor output_fp32 =
@@ -405,7 +407,7 @@ index_select_add(const Tensor &select_indices,
       if (offsets.numel() > 0) {
         std::memcpy(
             offsets_include_last.data(),
-            offsets.data_ptr<index_t>(),
+            offsets.const_data_ptr<index_t>(),
             sizeof(index_t) * offsets.numel());
       }
       offsets_include_last[offsets.numel()] = select_indices.numel();
@@ -596,18 +598,18 @@ index_select_scale_add(
       offsets_include_last.resize(offsets.numel() + 1);
       std::memcpy(
           offsets_include_last.data(),
-          offsets.data_ptr<index_t>(),
+          offsets.const_data_ptr<index_t>(),
           sizeof(index_t) * offsets.numel());
       offsets_include_last[offsets.numel()] = select_indices.numel();
       offsets_data = offsets_include_last.data();
     }
 
     Tensor scale_fp32 = at::empty(scale.sizes(), scale.options().dtype(at::kFloat));
-    auto* scale_data_fp32 = scale_fp32.data_ptr<float>();
+    auto* scale_data_fp32 = scale_fp32.mutable_data_ptr<float>();
 
 #if defined(USE_FBGEMM)
-    bool isbf16 = std::is_same<data_t, at::Half>::value ? false : true;
-    if (isbf16) {
+    constexpr bool isbf16 = std::is_same_v<data_t, at::Half> ? false : true;
+    if constexpr (isbf16) {
       fbgemm::Bfloat16ToFloat_simd(
           reinterpret_cast<const fbgemm::bfloat16*>(scale_data),
           scale_data_fp32,
@@ -628,7 +630,8 @@ index_select_scale_add(
               /* prefetch */ 16,
               /* is_weight_positional */ false,
               /* use_offsets */ true,
-              /* isbf16*/ isbf16);
+              /* is_bf16_out */ isbf16,
+              /* is_bf16_in */ isbf16);
     at::parallel_for(
         0, output_size, 1, [&](index_t start_idx, index_t end_idx) {
           bool success = kernel_16bit_index_t(
@@ -677,7 +680,7 @@ index_select_scale_add(
           for (int64_t i = start_idx; i < end_idx; i++) {
             // Convert FP32 intermediate buffer result back to 16 bit for
             // output dtype
-            if (std::is_same<data_t, at::Half>::value) {
+            if constexpr (std::is_same<data_t, at::Half>::value) {
               // FP16
               for (const auto d : c10::irange(ddim)) {
                 (output_data + i * ddim)[d] =
@@ -786,7 +789,7 @@ index_select_scale_add(const Tensor &select_indices,
       offsets_include_last.resize(offsets.numel() + 1);
       std::memcpy(
           offsets_include_last.data(),
-          offsets.data_ptr<index_t>(),
+          offsets.const_data_ptr<index_t>(),
           sizeof(index_t) * offsets.numel());
       offsets_include_last[offsets.numel()] = select_indices.numel();
       offsets_data = offsets_include_last.data();
@@ -902,8 +905,8 @@ void check_arguments(
 
   AT_DISPATCH_INDEX_TYPES(offsets.scalar_type(), "_embedding_bag_cpu_impl", [&]() {
     if (offsets.size(0) > 0) {
-      index_t offset_0 = offsets.data_ptr<index_t>()[0];
-      index_t offset_n = offsets.data_ptr<index_t>()[offsets.size(0)-1];
+      index_t offset_0 = offsets.const_data_ptr<index_t>()[0];
+      index_t offset_n = offsets.const_data_ptr<index_t>()[offsets.size(0)-1];
       TORCH_CHECK(offset_0 == 0, "offsets[0] has to be 0, i.e., the first sequence "
                                 "in the mini-batch has to start from position 0. "
                                 "However, got ", offsets[0]);
@@ -1188,7 +1191,7 @@ void _embedding_bag_cpu_impl_out(Tensor& output, Tensor& offset2bag,
 
 // Assumes all input tensors except for `weight` are contiguous.
 // See NOTE [ embedding_bag Native Functions ] in native_functions.yaml for details
-std::tuple<Tensor, Tensor, Tensor, Tensor> _embedding_bag_cpu_impl(
+static std::tuple<Tensor, Tensor, Tensor, Tensor> _embedding_bag_cpu_impl(
     const Tensor& weight,
     const Tensor& indices_,
     const Tensor& offsets_,
@@ -1751,15 +1754,6 @@ Tensor _embedding_bag_per_sample_weights_backward_cpu(
             scalar_t>(
             grad, weight, indices, offsets, offset2bag, mode, padding_idx);
       });
-}
-
-Tensor _embedding_bag_sparse_backward(
-    const Tensor &grad_, const Tensor &indices, const Tensor &offsets,
-    const Tensor &offset2bag, const Tensor &bag_size_, SymInt num_weights,
-    bool scale_grad_by_freq, int64_t mode, const c10::optional<Tensor>& per_sample_weights_opt,
-    int64_t padding_idx) {
-    return at::native::_embedding_bag_sparse_backward_symint(grad_, indices, offsets, offset2bag, bag_size_, std::move(num_weights),
-        scale_grad_by_freq, mode, per_sample_weights_opt, padding_idx);
 }
 
 Tensor _embedding_bag_sparse_backward_symint(

@@ -12,6 +12,7 @@
 #include <c10/core/UndefinedTensorImpl.h>
 #include <c10/core/WrapDimMinimal.h>
 #include <c10/util/Exception.h>
+#include <c10/util/ExclusivelyOwned.h>
 #include <c10/util/ExclusivelyOwnedTensorTraits.h>
 #include <c10/util/MaybeOwned.h>
 #include <c10/util/Optional.h>
@@ -101,7 +102,7 @@ class TORCH_API TensorBase {
     }
   }
   TensorBase(const TensorBase&) = default;
-  TensorBase(TensorBase&&) = default;
+  TensorBase(TensorBase&&) noexcept = default;
 
  public:
   // Creates a new wrapper from TensorImpl. Intentionally a free method because
@@ -204,6 +205,7 @@ class TORCH_API TensorBase {
     impl_.reset();
   }
 
+#if defined (_MSC_VER)
   TensorBase& operator=(const TensorBase& x) & {
     impl_ = x.impl_;
     return *this;
@@ -212,6 +214,10 @@ class TORCH_API TensorBase {
     impl_ = std::move(x.impl_);
     return *this;
   }
+#else
+  TensorBase& operator=(const TensorBase& x) & = default;
+  TensorBase& operator=(TensorBase&& x) & noexcept = default;
+#endif
 
   // Ban assignment to rvalues, since at::Tensor (weirdly) performs a deep copy here
   TensorBase& operator=(const TensorBase&) && = delete;
@@ -443,6 +449,11 @@ class TORCH_API TensorBase {
     return impl_->is_xla();
   }
 
+  /// Returns if a `Tensor` has MTIA backend.
+  bool is_mtia() const {
+    return impl_->is_mtia();
+  }
+
   /// Returns if a `Tensor` has HPU backend.
   bool is_hpu() const {
     return impl_->is_hpu();
@@ -560,12 +571,39 @@ class TORCH_API TensorBase {
                           .layout(layout());
   }
 
-  void* data_ptr() const {
+  const void* const_data_ptr() const {
     return this->unsafeGetTensorImpl()->data();
   }
 
+  void* mutable_data_ptr() const {
+    return this->unsafeGetTensorImpl()->mutable_data();
+  }
+
+  // TODO(#97856) Make this return a const pointer. This currently
+  //              returns a non-const pointer because of the large
+  //              number of clients that we still want to audit before
+  //              migrating to mutable_data_ptr().
+  void* data_ptr() const {
+    return mutable_data_ptr();
+  }
+
   template <typename T>
-  T * data_ptr() const;
+  const T* const_data_ptr() const;
+
+  template <typename T>
+  T* mutable_data_ptr() const;
+
+  // Legacy interface during the migration to indicate that a callsite
+  // has not been audited for mutability.
+  //
+  // Do not add new uses of this, use const_data_ptr() if possible,
+  // mutable_data_ptr() otherwise.
+  //
+  // TODO(#97856) Make this return a const pointer. This is currently
+  //              const because of the vast number of clients that
+  //              rely on this.
+  template <typename T>
+  T* data_ptr() const;
 
   // Purposely not defined here to avoid inlining
   void print() const;

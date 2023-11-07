@@ -18,10 +18,8 @@ def module_contains_param(module: nn.Module, parametrization: Type[nn.Module]) -
     if is_parametrized(module):
         # see if any of the module tensors have a parametriztion attached that matches the one passed in
         return any(
-            [
-                any(isinstance(param, parametrization) for param in param_list)
-                for key, param_list in module.parametrizations.items()  # type: ignore[union-attr,operator]
-            ]
+            any(isinstance(param, parametrization) for param in param_list)
+            for key, param_list in module.parametrizations.items()  # type: ignore[union-attr,operator]
         )
     return False
 
@@ -53,8 +51,7 @@ def swap_module(
         # respect device affinity when swapping modules
         devices = {p.device for p in chain(mod.parameters(), mod.buffers())}
         assert len(devices) <= 1, (
-            "swap_module only works with cpu or single-device CUDA modules, "
-            "but got devices {}".format(devices)
+            f"swap_module only works with cpu or single-device CUDA modules, but got devices {devices}"
         )
         device = next(iter(devices)) if len(devices) > 0 else None
         if device:
@@ -115,7 +112,7 @@ def get_arg_info_from_tensor_fqn(model: nn.Module, tensor_fqn: str) -> Dict[str,
 # Parametrizations
 class FakeSparsity(nn.Module):
     r"""Parametrization for the weights. Should be attached to the 'weight' or
-    any other parmeter that requires a mask applied to it.
+    any other parameter that requires a mask applied to it.
 
     Note::
 

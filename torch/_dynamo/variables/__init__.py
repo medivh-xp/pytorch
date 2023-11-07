@@ -3,17 +3,32 @@ from .builtin import BuiltinVariable
 from .constant import ConstantVariable, EnumVariable
 from .ctx_manager import (
     ContextWrappingVariable,
-    CUDAStreamContextVariable,
-    CUDAStreamVariable,
     DeterministicAlgorithmsVariable,
+    DisabledSavedTensorsHooksVariable,
     GradModeVariable,
+    InferenceModeVariable,
+    StreamContextVariable,
+    StreamVariable,
     WithExitFunctionVariable,
 )
-from .dicts import ConstDictVariable, DataClassVariable, DefaultDictVariable
+from .dicts import (
+    ConstDictVariable,
+    CustomizedDictVariable,
+    DataClassVariable,
+    DefaultDictVariable,
+    SetVariable,
+)
 from .functions import (
     NestedUserFunctionVariable,
     UserFunctionVariable,
     UserMethodVariable,
+)
+from .higher_order_ops import TorchHigherOrderOperatorVariable
+from .iter import (
+    CountIteratorVariable,
+    CycleIteratorVariable,
+    IteratorVariable,
+    RepeatIteratorVariable,
 )
 from .lists import (
     BaseListVariable,
@@ -25,9 +40,10 @@ from .lists import (
     TupleVariable,
 )
 from .misc import (
+    AutogradFunctionContextVariable,
     AutogradFunctionVariable,
-    BlackHoleVariable,
     ClosureVariable,
+    DeletedVariable,
     GetAttrVariable,
     InspectSignatureVariable,
     LambdaVariable,
@@ -35,50 +51,61 @@ from .misc import (
     NewGlobalVariable,
     NumpyVariable,
     PythonModuleVariable,
+    SkipFilesVariable,
     SuperVariable,
     UnknownVariable,
 )
 from .nn_module import NNModuleVariable, UnspecializedNNModuleVariable
 from .tensor import (
     FakeItemVariable,
+    NumpyNdarrayVariable,
     SymNodeVariable,
     TensorVariable,
     UnspecializedPythonVariable,
 )
-from .torch import TorchVariable
+from .torch import TorchCtxManagerClassVariable, TorchVariable
 from .user_defined import UserDefinedClassVariable, UserDefinedObjectVariable
 
 __all__ = [
+    "AutogradFunctionContextVariable",
     "AutogradFunctionVariable",
     "BaseListVariable",
-    "BlackHoleVariable",
     "BuiltinVariable",
     "ClosureVariable",
     "ConstantVariable",
     "ConstDictVariable",
     "ContextWrappingVariable",
     "DataClassVariable",
+    "CustomizedDictVariable",
     "DefaultDictVariable",
+    "DeletedVariable",
+    "DeterministicAlgorithmsVariable",
     "EnumVariable",
     "FakeItemVariable",
     "GetAttrVariable",
     "GradModeVariable",
-    "DeterministicAlgorithmsVariable",
     "InspectSignatureVariable",
+    "IteratorVariable",
+    "RepeatIteratorVariable",
+    "CountIteratorVariable",
+    "CycleIteratorVariable",
     "LambdaVariable",
     "ListIteratorVariable",
     "ListVariable",
+    "NNModuleVariable",
     "NamedTupleVariable",
     "NestedUserFunctionVariable",
     "NewCellVariable",
     "NewGlobalVariable",
-    "NNModuleVariable",
+    "NumpyNdarrayVariable",
     "NumpyVariable",
     "PythonModuleVariable",
     "RangeVariable",
     "SliceVariable",
+    "SkipFilesVariable",
     "SuperVariable",
     "TensorVariable",
+    "TorchCtxManagerClassVariable",
     "TorchVariable",
     "TupleVariable",
     "UnknownVariable",

@@ -69,6 +69,7 @@ Creating TorchScript Code
     load
     ignore
     unused
+    interface
     isinstance
     Attribute
     annotate
@@ -871,7 +872,7 @@ now supported.
 
 Fusion Backends
 ~~~~~~~~~~~~~~~
-There are a couple of fusion backends available to optimize TorchScript execution. The default fuser on CPUs is NNC, which can perform fusions for both CPUs and GPUs. The default fuser on GPUs is NVFuser, which supports a wider range of operators and has demonstrated generated kernels with improved throughput. See the  `NVFuser documentation <https://github.com/pytorch/pytorch/blob/master/torch/csrc/jit/codegen/cuda/README.md>`_ for more details on usage and debugging.
+There are a couple of fusion backends available to optimize TorchScript execution. The default fuser on CPUs is NNC, which can perform fusions for both CPUs and GPUs. The default fuser on GPUs is NVFuser, which supports a wider range of operators and has demonstrated generated kernels with improved throughput. See the  `NVFuser documentation <https://github.com/pytorch/pytorch/blob/main/torch/csrc/jit/codegen/cuda/README.md>`_ for more details on usage and debugging.
 
 
 References
@@ -885,3 +886,7 @@ References
 .. This package is missing doc. Adding it here for coverage
 .. This does not add anything to the rendered page.
 .. py:module:: torch.jit.mobile
+.. py:module:: torch.jit.annotations
+.. py:module:: torch.jit.frontend
+.. py:module:: torch.jit.generate_bytecode
+.. py:module:: torch.jit.quantized

@@ -1,9 +1,6 @@
 #include <ATen/DLConvertor.h>
 #include <ATen/Functions.h>
 
-#include <iostream>
-#include <sstream>
-
 using namespace std;
 namespace at {
 
@@ -39,7 +36,7 @@ DLDataType getDLDataType(const Tensor& t) {
       dtype.code = DLDataTypeCode::kDLFloat;
       break;
     case ScalarType::Bool:
-      TORCH_CHECK(false, "Bool type is not supported by dlpack");
+      dtype.code = DLDataTypeCode::kDLBool;
       break;
     case ScalarType::ComplexHalf:
       dtype.code = DLDataTypeCode::kDLComplex;
@@ -52,6 +49,10 @@ DLDataType getDLDataType(const Tensor& t) {
       break;
     case ScalarType::BFloat16:
       dtype.code = DLDataTypeCode::kDLBfloat;
+      break;
+    case ScalarType::Float8_e5m2:
+    case ScalarType::Float8_e4m3fn:
+      TORCH_CHECK(false, "float8 types are not supported by dlpack");
       break;
     case ScalarType::QInt8:
     case ScalarType::QUInt8:
@@ -75,7 +76,7 @@ DLDataType getDLDataType(const Tensor& t) {
   return dtype;
 }
 
-DLDevice getDLDevice(const Tensor& tensor, const int64_t& device_id) {
+static DLDevice getDLDevice(const Tensor& tensor, const int64_t& device_id) {
   DLDevice ctx;
   ctx.device_id = device_id;
   switch (tensor.device().type()) {
@@ -208,6 +209,16 @@ ScalarType toScalarType(const DLDataType& dtype) {
               false, "Unsupported kFloat bits " + c10::to_string(dtype.bits));
       }
       break;
+    case DLDataTypeCode::kDLBool:
+      switch (dtype.bits) {
+        case 8:
+          stype = ScalarType::Bool;
+          break;
+        default:
+          TORCH_CHECK(
+              false, "Unsupported kDLBool bits " + c10::to_string(dtype.bits));
+      }
+      break;
     default:
       TORCH_CHECK(
           false, "Unsupported code " + c10::to_string(dtype.code));
@@ -221,7 +232,7 @@ struct ATenDLMTensor {
   DLManagedTensor tensor;
 };
 
-void deleter(DLManagedTensor* arg) {
+static void deleter(DLManagedTensor* arg) {
   delete static_cast<ATenDLMTensor*>(arg->manager_ctx);
 }
 

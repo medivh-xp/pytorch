@@ -9,7 +9,6 @@ from itertools import product
 import math
 import random
 from numbers import Number
-import unittest
 import warnings
 import operator
 from functools import partial
@@ -20,13 +19,13 @@ from torch.testing._internal.common_utils import (
     TestCase,
     slowTest,
     iter_indices,
-    TEST_WITH_ASAN,
     run_tests,
     gradcheck,
     torch_to_numpy_dtype_dict,
     numpy_to_torch_dtype_dict,
     TEST_SCIPY,
     set_default_dtype,
+    skipIfTorchDynamo,
 )
 from torch.testing._internal.common_device_type import (
     expectedFailureMeta,
@@ -169,9 +168,9 @@ class TestBinaryUfuncs(TestCase):
             if _numel(l) <= 100 and _numel(r) <= 100:
                 msg = (
                     "Failed to produce expected results! Input lhs tensor was"
-                    " {0}, rhs tensor was {1}, torch result is {2}, and reference result is"
-                    " {3}."
-                ).format(l, r, actual, expected)
+                    f" {l}, rhs tensor was {r}, torch result is {actual}, and reference result is"
+                    f" {expected}."
+                )
             else:
                 msg = None
 
@@ -195,8 +194,6 @@ class TestBinaryUfuncs(TestCase):
         gen = generate_elementwise_binary_tensors(op, device=device, dtype=dtype)
         self._test_reference_numerics(dtype, op, gen, equal_nan=True)
 
-    # runtime error: 128 is outside the range of representable values of type 'signed char'
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @ops(binary_ufuncs_with_references)
     def test_reference_numerics_small_values(self, device, dtype, op):
         if dtype is torch.bool:
@@ -207,8 +204,6 @@ class TestBinaryUfuncs(TestCase):
         )
         self._test_reference_numerics(dtype, op, gen, equal_nan=True)
 
-    # TODO: review if this skip is necessary
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @ops(
         binary_ufuncs_with_references,
         allowed_dtypes=(
@@ -229,8 +224,6 @@ class TestBinaryUfuncs(TestCase):
         )
         self._test_reference_numerics(dtype, op, gen, equal_nan=True)
 
-    # TODO: review if this skip is necessary
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @ops(
         binary_ufuncs_with_references,
         allowed_dtypes=(
@@ -498,7 +491,7 @@ class TestBinaryUfuncs(TestCase):
         )
 
         def _supported(dtypes):
-            return all((x in supported_dtypes for x in dtypes))
+            return all(x in supported_dtypes for x in dtypes)
 
         # int x int type promotion
         if _supported((torch.int16, torch.int32, torch.int64)):
@@ -992,8 +985,7 @@ class TestBinaryUfuncs(TestCase):
             an, bn = a.float().cpu().numpy(), b.float().cpu().numpy()
 
         for mode, np_ref in ((None, np.true_divide), ("floor", np.floor_divide)):
-            with np.errstate(all="ignore"):
-                expect = np_ref(an, bn)
+            expect = np_ref(an, bn)
             kwargs = dict(rounding_mode=mode) if mode is not None else {}
             with set_default_dtype(torch.double):
                 actual = torch.divide(a, b, **kwargs)
@@ -1070,8 +1062,7 @@ class TestBinaryUfuncs(TestCase):
             ("floor", np.floor_divide),
             ("trunc", lambda a, b: np.trunc(np.true_divide(a, b)).astype(a.dtype)),
         ):
-            with np.errstate(all="ignore"):
-                expect = torch.from_numpy(np_ref(an, bn))
+            expect = torch.from_numpy(np_ref(an, bn))
 
             kwargs = dict(rounding_mode=mode) if mode is not None else {}
             # Contiguous (likely vectorized)
@@ -1846,12 +1837,13 @@ class TestBinaryUfuncs(TestCase):
                         self.assertEqual(actual_first_tensor, actual_tensor)
                         self.assertEqual(actual_second_tensor, actual_tensor)
 
-            _scalar_helper(operator.truediv, operator.truediv)
-            _scalar_helper(operator.truediv, torch.true_divide)
-            _scalar_helper(lambda a, b: math.floor(a / b), operator.floordiv)
-            _scalar_helper(lambda a, b: math.floor(a / b), torch.floor_divide)
+        _scalar_helper(operator.truediv, operator.truediv)
+        _scalar_helper(operator.truediv, torch.true_divide)
+        _scalar_helper(lambda a, b: math.floor(a / b), operator.floordiv)
+        _scalar_helper(lambda a, b: math.floor(a / b), torch.floor_divide)
 
     @onlyNativeDeviceTypes
+    @skipIfTorchDynamo("Not a suitable test for TorchDynamo")
     def test_div_and_floordiv_script_vs_python(self, device):
         # Creates jitted functions of two tensors
         def _wrapped_div(a, b):
@@ -1924,6 +1916,7 @@ class TestBinaryUfuncs(TestCase):
                     self.assertEqual(5 // a, scripted_rfloordiv_scalar(a_t))
 
     @onlyNativeDeviceTypes
+    @skipIfTorchDynamo("Not a suitable test for TorchDynamo")
     def test_idiv_and_ifloordiv_vs_python(self, device):
         def _wrapped_idiv_tensor(a, b):
             a /= b
@@ -2429,21 +2422,21 @@ class TestBinaryUfuncs(TestCase):
         for i in range(750):
             self.assertTrue(
                 torch.isnan(ma[i]),
-                "max(a, b): {}, a: {}, b: {}".format(ma[i], a[i], b[i]),
+                f"max(a, b): {ma[i]}, a: {a[i]}, b: {b[i]}",
             )
             self.assertTrue(
                 torch.isnan(mi[i]),
-                "min(a, b): {}, a: {}, b: {}".format(mi[i], a[i], b[i]),
+                f"min(a, b): {mi[i]}, a: {a[i]}, b: {b[i]}",
             )
 
         for i in range(750, 1000):
             self.assertFalse(
                 torch.isnan(ma[i]),
-                "max(a, b): {}, a: {}, b: {}".format(ma[i], a[i], b[i]),
+                f"max(a, b): {ma[i]}, a: {a[i]}, b: {b[i]}",
             )
             self.assertFalse(
                 torch.isnan(mi[i]),
-                "min(a, b): {}, a: {}, b: {}".format(mi[i], a[i], b[i]),
+                f"min(a, b): {mi[i]}, a: {a[i]}, b: {b[i]}",
             )
 
     @dtypes(
@@ -2616,7 +2609,6 @@ class TestBinaryUfuncs(TestCase):
             rtol=0,
         )
 
-    @onlyCUDA
     @dtypes(torch.half)
     def test_divmul_scalar(self, device, dtype):
         x = torch.tensor(100.0, device=device, dtype=dtype)
@@ -2809,7 +2801,7 @@ class TestBinaryUfuncs(TestCase):
                         abs(c[0] - d[0]) == abs(b[0])
                     )  # differ by one divisor
 
-    @dtypesIfCPU(torch.bfloat16, torch.float32, torch.float64)
+    @dtypesIfCPU(torch.bfloat16, torch.half, torch.float32, torch.float64)
     @dtypes(torch.float32, torch.float64)
     def test_hypot(self, device, dtype):
         inputs = [
@@ -2832,7 +2824,7 @@ class TestBinaryUfuncs(TestCase):
         ]
         for input in inputs:
             actual = torch.hypot(input[0], input[1])
-            if dtype == torch.bfloat16:
+            if dtype in [torch.bfloat16, torch.half]:
                 expected = torch.sqrt(input[0] * input[0] + input[1] * input[1])
             else:
                 expected = np.hypot(input[0].cpu().numpy(), input[1].cpu().numpy())
@@ -2881,6 +2873,7 @@ class TestBinaryUfuncs(TestCase):
         self.assertEqual(actual, expected, exact_dtype=False)
 
     @onlyNativeDeviceTypes
+    @dtypesIfCPU(torch.float32, torch.float64, torch.float16)
     @dtypes(torch.float32, torch.float64)
     def test_nextafter(self, device, dtype):
         # Test special cases
@@ -3015,7 +3008,6 @@ class TestBinaryUfuncs(TestCase):
             with self.assertWarnsOnceRegex(UserWarning, "floor_divide"):
                 a // b
 
-    @unittest.skipIf(TEST_WITH_ASAN, "Integer overflows are not allowed under ASAN")
     @dtypes(*all_types_and_complex_and(torch.half, torch.bfloat16, torch.bool))
     def test_muldiv_scalar(self, device, dtype):
         x = make_tensor((10, 3), dtype=dtype, device=device, low=None, high=None)
@@ -3141,10 +3133,10 @@ class TestBinaryUfuncs(TestCase):
         self.assertEqual(a >> 1, expected_r)
         self.compare_with_numpy(lambda x: x >> 1, lambda x: np.right_shift(x, 1), a)
 
-    @onlyCPU
+    @onlyNativeDeviceTypes
     @dtypes(*get_all_int_dtypes())
     def test_shift_limits(self, device, dtype):
-        "Ensure that CPU integer bit shifting works as expected with out-of-limits shift values."
+        "Ensure that integer bit shifting works as expected with out-of-limits shift values."
         # Issue #70904
         iinfo = torch.iinfo(dtype)
         bits = iinfo.bits
@@ -3417,7 +3409,6 @@ class TestBinaryUfuncs(TestCase):
     @onlyCUDA
     @dtypes(torch.half, torch.bfloat16)
     def test_lerp_lowp(self, device, dtype):
-        ref_dtype = torch.float
         xvals = (0.0, -30000.0)
         yvals = (0.1, -20000.0)
         xs = [torch.full((4,), xval, device=device, dtype=dtype) for xval in xvals]
@@ -3432,7 +3423,7 @@ class TestBinaryUfuncs(TestCase):
             self.assertEqual(actual, expected, atol=0.0, rtol=0.0)
 
     @onlyCPU
-    @dtypes(torch.bfloat16)
+    @dtypes(torch.half, torch.bfloat16)
     def test_lerp_lowp_cpu(self, device, dtype):
         xvals = (0.0, -30000.0)
         yvals = (0.1, -20000.0)
@@ -3496,6 +3487,7 @@ class TestBinaryUfuncs(TestCase):
         )
         _test_helper(a, b)
 
+    @skipIfTorchDynamo     # complex infs/nans differ under Dynamo/Inductor
     @dtypesIfCUDA(torch.float32, torch.float64, torch.bfloat16)
     @dtypes(torch.float32, torch.float64, torch.bfloat16, torch.complex64, torch.complex128)
     def test_logaddexp(self, device, dtype):
@@ -3813,12 +3805,19 @@ class TestBinaryUfuncs(TestCase):
             )
             self.assertEqual(expected, actual.view(-1), rtol=0, atol=0.02)
 
-            # bfloat16
-            a_bf16 = a.bfloat16()
-            b_bf16 = b.bfloat16()
-            actual_bf16 = a_bf16.atan2(b_bf16)
-            self.assertEqual(actual_bf16, actual.bfloat16())
-            self.assertEqual(expected, actual_bf16.view(-1), exact_dtype=False, rtol=0, atol=0.02)
+            # bfloat16/float16
+            for lowp_dtype in [torch.bfloat16, torch.float16]:
+                if lowp_dtype == torch.bfloat16:
+                    rtol = 0
+                    atol = 0.02
+                else:
+                    rtol = 0
+                    atol = 0.001
+                a_16 = a.to(dtype=lowp_dtype)
+                b_16 = b.to(dtype=lowp_dtype)
+                actual_16 = a_16.atan2(b_16)
+                self.assertEqual(actual_16, actual.to(dtype=lowp_dtype))
+                self.assertEqual(expected, actual_16.view(-1), exact_dtype=False, rtol=rtol, atol=atol)
 
         _test_atan2_with_size((2, 2), device)
         _test_atan2_with_size((3, 3), device)
@@ -4455,10 +4454,8 @@ def generate_not_implemented_tests(cls):
         return test
 
     for op in tensor_binary_ops:
-        test_name = "test_{}_not_implemented".format(op)
-        assert not hasattr(cls, test_name), "{0} already in {1}".format(
-            test_name, cls.__name__
-        )
+        test_name = f"test_{op}_not_implemented"
+        assert not hasattr(cls, test_name), f"{test_name} already in {cls.__name__}"
 
         setattr(cls, test_name, create_test_func(op))
 

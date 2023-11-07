@@ -163,18 +163,21 @@ class DataLoader(Generic[T_co]):
         worker_init_fn (Callable, optional): If not ``None``, this will be called on each
             worker subprocess with the worker id (an int in ``[0, num_workers - 1]``) as
             input, after seeding and before data loading. (default: ``None``)
+        multiprocessing_context (str or multiprocessing.context.BaseContext, optional): If
+            ``None``, the default `multiprocessing context`_ of your operating system will
+            be used. (default: ``None``)
         generator (torch.Generator, optional): If not ``None``, this RNG will be used
             by RandomSampler to generate random indexes and multiprocessing to generate
-            `base_seed` for workers. (default: ``None``)
+            ``base_seed`` for workers. (default: ``None``)
         prefetch_factor (int, optional, keyword-only arg): Number of batches loaded
             in advance by each worker. ``2`` means there will be a total of
             2 * num_workers batches prefetched across all workers. (default value depends
             on the set value for num_workers. If value of num_workers=0 default is ``None``.
-            Otherwise if value of num_workers>0 default is ``2``).
-        persistent_workers (bool, optional): If ``True``, the data loader will not shutdown
+            Otherwise, if value of ``num_workers > 0`` default is ``2``).
+        persistent_workers (bool, optional): If ``True``, the data loader will not shut down
             the worker processes after a dataset has been consumed once. This allows to
             maintain the workers `Dataset` instances alive. (default: ``False``)
-        pin_memory_device (str, optional): the device to pin memory to if ``pin_memory`` is
+        pin_memory_device (str, optional): the device to :attr:`pin_memory` to if ``pin_memory`` is
             ``True``.
 
 
@@ -203,6 +206,9 @@ class DataLoader(Generic[T_co]):
 
     .. warning:: See :ref:`reproducibility`, and :ref:`dataloader-workers-random-seed`, and
                  :ref:`data-loading-randomness` notes for random seed related questions.
+
+    .. _multiprocessing context:
+        https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods
     """
     dataset: Dataset[T_co]
     batch_size: Optional[int]
@@ -217,8 +223,8 @@ class DataLoader(Generic[T_co]):
     __initialized = False
 
     def __init__(self, dataset: Dataset[T_co], batch_size: Optional[int] = 1,
-                 shuffle: Optional[bool] = None, sampler: Union[Sampler[int], Iterable[int], None] = None,
-                 batch_sampler: Union[Sampler[List[int]], Iterable[List[int]], None] = None,
+                 shuffle: Optional[bool] = None, sampler: Union[Sampler, Iterable, None] = None,
+                 batch_sampler: Union[Sampler[List], Iterable[List], None] = None,
                  num_workers: int = 0, collate_fn: Optional[_collate_fn_t] = None,
                  pin_memory: bool = False, drop_last: bool = False,
                  timeout: float = 0, worker_init_fn: Optional[_worker_init_fn_t] = None,
@@ -299,19 +305,17 @@ class DataLoader(Generic[T_co]):
             # We cannot check `shuffle is not None` here, since previously `shuffle=False` was the default.
             elif shuffle not in {False, None}:
                 raise ValueError(
-                    "DataLoader with IterableDataset: expected unspecified "
-                    "shuffle option, but got shuffle={}".format(shuffle))
+                    f"DataLoader with IterableDataset: expected unspecified shuffle option, but got shuffle={shuffle}")
 
             if sampler is not None:
                 # See NOTE [ Custom Samplers and IterableDataset ]
                 raise ValueError(
-                    "DataLoader with IterableDataset: expected unspecified "
-                    "sampler option, but got sampler={}".format(sampler))
+                    f"DataLoader with IterableDataset: expected unspecified sampler option, but got sampler={sampler}")
             elif batch_sampler is not None:
                 # See NOTE [ Custom Samplers and IterableDataset ]
                 raise ValueError(
                     "DataLoader with IterableDataset: expected unspecified "
-                    "batch_sampler option, but got batch_sampler={}".format(batch_sampler))
+                    f"batch_sampler option, but got batch_sampler={batch_sampler}")
         else:
             shuffle = bool(shuffle)
             self._dataset_kind = _DatasetKind.Map
@@ -393,27 +397,26 @@ class DataLoader(Generic[T_co]):
                     valid_start_methods = multiprocessing.get_all_start_methods()
                     if multiprocessing_context not in valid_start_methods:
                         raise ValueError(
-                            ('multiprocessing_context option '
-                             'should specify a valid start method in {!r}, but got '
-                             'multiprocessing_context={!r}').format(valid_start_methods, multiprocessing_context))
+                            'multiprocessing_context option '
+                            f'should specify a valid start method in {valid_start_methods!r}, but got '
+                            f'multiprocessing_context={multiprocessing_context!r}')
                     multiprocessing_context = multiprocessing.get_context(multiprocessing_context)
 
                 if not isinstance(multiprocessing_context, python_multiprocessing.context.BaseContext):
-                    raise TypeError(('multiprocessing_context option should be a valid context '
-                                     'object or a string specifying the start method, but got '
-                                     'multiprocessing_context={}').format(multiprocessing_context))
+                    raise TypeError('multiprocessing_context option should be a valid context '
+                                    'object or a string specifying the start method, but got '
+                                    f'multiprocessing_context={multiprocessing_context}')
             else:
-                raise ValueError(('multiprocessing_context can only be used with '
-                                  'multi-process loading (num_workers > 0), but got '
-                                  'num_workers={}').format(self.num_workers))
+                raise ValueError('multiprocessing_context can only be used with '
+                                 'multi-process loading (num_workers > 0), but got '
+                                 f'num_workers={self.num_workers}')
 
         self.__multiprocessing_context = multiprocessing_context
 
     def __setattr__(self, attr, val):
         if self.__initialized and attr in (
                 'batch_size', 'batch_sampler', 'sampler', 'drop_last', 'dataset', 'persistent_workers'):
-            raise ValueError('{} attribute should not be set after {} is '
-                             'initialized'.format(attr, self.__class__.__name__))
+            raise ValueError(f'{attr} attribute should not be set after {self.__class__.__name__} is initialized')
 
         super().__setattr__(attr, val)
 
@@ -598,7 +601,7 @@ class _BaseDataLoaderIter:
         self._base_seed = torch.empty((), dtype=torch.int64).random_(generator=loader.generator).item()
         self._persistent_workers = loader.persistent_workers
         self._num_yielded = 0
-        self._profile_name = "enumerate(DataLoader)#{}.__next__".format(self.__class__.__name__)
+        self._profile_name = f"enumerate(DataLoader)#{self.__class__.__name__}.__next__"
 
     def __iter__(self) -> '_BaseDataLoaderIter':
         return self
@@ -938,7 +941,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
     #   # No need to check main thread. If this thread is alive, the main loader
     #   # thread must be alive, because this thread is set as daemonic.
     #   While `pin_memory_thread_done_event` is not set:
-    #     Get from `index_queue`.
+    #     Get from `worker_result_queue`.
     #       If timed out, continue to get in the next iteration.
     #       Otherwise, process data.
     #       While `pin_memory_thread_done_event` is not set:
@@ -1060,7 +1063,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
             # pin_memory_thread once it is started.
             self._pin_memory_thread = pin_memory_thread
         else:
-            self._data_queue = self._worker_result_queue
+            self._data_queue = self._worker_result_queue  # type: ignore[assignment]
 
         # In some rare cases, persistent workers (daemonic processes)
         # would be terminated before `__del__` of iterator is invoked
@@ -1139,7 +1142,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                     self._mark_worker_as_unavailable(worker_id)
             if len(failed_workers) > 0:
                 pids_str = ', '.join(str(w.pid) for w in failed_workers)
-                raise RuntimeError('DataLoader worker (pid(s) {}) exited unexpectedly'.format(pids_str)) from e
+                raise RuntimeError(f'DataLoader worker (pid(s) {pids_str}) exited unexpectedly') from e
             if isinstance(e, queue.Empty):
                 return (False, None)
             import tempfile
@@ -1275,7 +1278,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
             if success:
                 return data
             else:
-                raise RuntimeError('DataLoader timed out after {} seconds'.format(self._timeout))
+                raise RuntimeError(f'DataLoader timed out after {self._timeout} seconds')
         elif self._pin_memory:
             while self._pin_memory_thread.is_alive():
                 success, data = self._try_get_data()
